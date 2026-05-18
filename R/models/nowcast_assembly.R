@@ -20,15 +20,18 @@ build_nowcast_categories <- function(kalman_forecasts, pi_smoothed, cfg) {
   if (nrow(kalman_forecasts) == 0L) {
     return(empty_nowcast())
   }
-  # Latest available smoothed π per category — used as fallback for
-  # quarters not represented in pi_smoothed (e.g. recent periods past
-  # the completion cutoff).
+  # Forward projection of π for quarters past the completion cutoff.
+  # Phase 1 raw π is noisy (quarterly ABS NOM revisions ± 30%), so the
+  # latest single value is a poor extrapolation. Use the median of the
+  # last N quarters within each category by default.
+  proj_method <- cfg$pi$projection %||% "median_n"
+  proj_n      <- cfg$pi$projection_window %||% 8L
   pi_last <- pi_smoothed |>
     dplyr::arrange(.data$period) |>
     dplyr::group_by(.data$category) |>
     dplyr::summarise(
-      pi_latest = dplyr::last(stats::na.omit(.data$pi_smoothed)),
-      se_latest = dplyr::last(stats::na.omit(.data$pi_se)),
+      pi_latest = project_pi_value(.data$pi_smoothed, proj_method, proj_n),
+      se_latest = project_pi_value(.data$pi_se,       proj_method, proj_n),
       .groups   = "drop"
     )
   pi_period <- pi_smoothed |>
@@ -139,6 +142,23 @@ empty_headline <- function() {
     nom_se = numeric(),
     lower_80 = numeric(), upper_80 = numeric(),
     lower_95 = numeric(), upper_95 = numeric()
+  )
+}
+
+#' Project π forward past the empirical-cohort cutoff
+#'
+#' Robust to noisy quarterly π by using a rolling summary over the
+#' last `n` non-NA values (default: median of last 8 quarters).
+#' @keywords internal
+project_pi_value <- function(x, method = "median_n", n = 8L) {
+  x <- stats::na.omit(x)
+  if (!length(x)) return(NA_real_)
+  recent <- utils::tail(x, n)
+  switch(method,
+    latest   = utils::tail(x, 1L),
+    mean_n   = mean(recent),
+    median_n = stats::median(recent),
+    stats::median(recent)
   )
 }
 

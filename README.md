@@ -113,6 +113,48 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 2 v0.5 — what's new
+
+- **Real DHA visa-grants data via data.gov.au CKAN.** The fetcher
+  pulls Student, Visitor, Temporary Graduate, Skilled and Working
+  Holiday Maker visa grant data from the CKAN open-data API at
+  `data.gov.au/data/api/3/action/...`. Files are annual financial-year
+  pivots; the panel builder broadcasts them equally across the four
+  quarters of each FY.
+- **Damped Kalman trend.** The default Kalman now uses a level-plus-
+  AR(1)-slope structure (`phi = 0.85`) instead of the local-linear
+  trend, which stabilises long-horizon forecasts. Configurable via
+  `models.kalman.trend_type` ∈ {`damped`, `local_linear`,
+  `level_only`}.
+- **Robust π projection.** Forward projection of π past the cohort
+  cutoff now uses the median of the last 8 quarters (configurable via
+  `pi.projection` / `pi.projection_window`) instead of the latest
+  value, which was too sensitive to noise / revisions.
+- **Bridge regression with visa-grants leading indicator.** The
+  benchmark now fits `nom_final ~ Σ β·OAD_arrivals_l(k) +
+  Σ γ·visa_grants_l(k)`. With recent live data, in-sample R² ≈ 0.87
+  and the bridge **outperforms the Kalman** by ~2.5× RMSE on
+  backcasts, confirming that visa grants are a useful leading
+  indicator.
+- **Vintage-aware backtest runs end-to-end on real data.** Pseudo-
+  real-time mode lets the backtest framework run before any historical
+  vintages have been captured: at each evaluation date, sources are
+  fetched live and restricted to what would have been observable then,
+  using the configured publication lags.
+
+### Indicative backtest performance (11 quarterly dates, 2023-Q1 → 2025-Q3)
+
+| Model | h=-2 RMSE | h=-1 RMSE | h=0 RMSE |
+|-------|----------:|----------:|---------:|
+| bridge   | 21,511 | 25,656 | (truth NA) |
+| random walk | 39,188 | 46,857 | (truth NA) |
+| AR(1) | 48,150 | – | – |
+| kalman_v1 | 57,432 | 60,585 | 78,949 |
+
+Comparison to ABS preliminary is informational only in v0.5 — without a
+multi-month history of vintages captured, the framework falls back to
+treating the latest NOM observation as the preliminary value.
+
 ## Phase 1 performance (as at the v0.1 calibration)
 
 On a live ABS pull (May 2026), the headline nowcast tracks the ABS

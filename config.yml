@@ -50,6 +50,18 @@ default:
   # gracefully when no downloadable files are found. For Phase 2 these
   # sources should be re-wired against the data.gov.au open-data API
   # (or equivalent) — see README "Limitations".
+  datagov:
+    # data.gov.au CKAN endpoint. Used by the DHA visa-grant fetcher.
+    # Other base URLs (data.gov.au/api/3/... or data.gov.au/api/...)
+    # return 404; only the "/data/" path is wired up.
+    ckan_endpoint: "https://data.gov.au/data/api/3/action/package_search"
+    dha_queries:
+      - "Student visa program"
+      - "Visitor visa program"
+      - "Temporary Graduate visa program"
+      - "Temporary Work (skilled) visa program"
+      - "Working Holiday Maker visa program"
+
   homeaffairs:
     visa_grants_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics"
     twh_index:         "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/live/temporary-entrants-in-australia"
@@ -87,13 +99,19 @@ default:
     # for empirical pi estimation. ABS uses 12/16 so 16 months ~ 6 quarters.
     completion_quarters: 6
     smoother: "loess"      # one of: loess, hp, locallinear, none
-    loess_span: 0.30
+    loess_span: 0.50       # wider window — Phase 1 raw pi is volatile (~0.6-1.2)
     hp_lambda: 1600
     regime_breaks:
       - "2020-03-01"       # border closure
       - "2022-03-01"       # reopening
     floor: 0.0
-    ceiling: 1.5           # > 1 possible if OAD undercounts a cohort
+    ceiling: 1.20          # 1.0 in theory but OAD/NOM accounting can push slightly above
+    # Forward-projection strategy for cohorts past the completion cutoff.
+    # "latest"   — carry forward the most recent smoothed value (fragile)
+    # "median_n" — use the median of the last N quarters within the current regime
+    # "mean_n"   — use the mean of the last N quarters within the current regime
+    projection: "median_n"
+    projection_window: 8   # quarters
 
   # ----- Modelling -----
   models:
@@ -101,6 +119,15 @@ default:
       seasonal_period: 12
       include_ar1_irregular: true
       categories_to_fit: ~     # NULL => all
+      # Trend specification used in the state equation:
+      #   "local_linear" — level + slope, both random-walk (forecasts
+      #                    extrapolate any recent trend; volatile)
+      #   "level_only"   — random walk in level only (forecasts flat)
+      #   "damped"       — level + AR(1) slope, |phi| < 1 (slope decays
+      #                    in forecasts; the standard choice for
+      #                    nowcasting noisy migration flows)
+      trend_type: "damped"
+      damping_phi: 0.85
     bridge:
       max_lag_quarters: 4
     stan:

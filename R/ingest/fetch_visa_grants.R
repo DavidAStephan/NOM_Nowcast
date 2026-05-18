@@ -15,6 +15,19 @@
 #'   `category`, `onshore`, `unit`, `metadata`.
 #' @export
 fetch_visa_grants <- function(cfg, asof) {
+  # Primary path: data.gov.au CKAN — DHA's "BP00" visa program reports
+  # are reliably hosted there with a stable API. Secondary path: scrape
+  # the DHA visa-statistics landing page (kept as a fallback because
+  # DHA may publish additional Excel data there).
+  primary <- tryCatch(
+    fetch_dha_ckan(cfg, asof),
+    error = function(e) {
+      nn_warn("DHA CKAN fetch failed: {conditionMessage(e)}")
+      empty_visa_grants()
+    }
+  )
+  if (!is.null(primary) && nrow(primary) > 0L) return(primary)
+
   index_url <- cfg$homeaffairs$visa_grants_index
   out <- tryCatch(
     fetch_visa_grants_scrape(index_url, cfg, asof),

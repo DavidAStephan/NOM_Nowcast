@@ -28,6 +28,34 @@ score_backtest <- function(backtest_runs, db_path, cfg) {
 
   truth <- latest_truth_nom(db_path)
   prelim <- prelim_at_asof(db_path, bt$asof_date)
+  # When the vintage store is empty (e.g. pseudo-real-time mode on the
+  # first backtest), fall back to using the latest-vintage NOM as the
+  # "preliminary" reference. Reviewers should treat the
+  # `rmse_vs_prelim` column as informational under those conditions.
+  if (is.null(prelim) || nrow(prelim) == 0L) {
+    if (nrow(bt) && nrow(truth)) {
+      prelim <- tidyr::expand_grid(asof_date = unique(bt$asof_date),
+                                   truth) |>
+        dplyr::rename(nom_prelim = "nom_truth")
+    } else {
+      prelim <- tibble::tibble(asof_date = as.Date(character()),
+                               period = as.Date(character()),
+                               category = character(),
+                               nom_prelim = numeric())
+    }
+  }
+
+  # Fallback truth when the vintage store has no NOM either — use the
+  # latest NOM observed within the panel produced by run_backtest.
+  if (is.null(truth) || nrow(truth) == 0L) {
+    panel_truth <- bt |>
+      dplyr::filter(.data$model == "abs_preliminary",
+                    !is.na(.data$nom_mean)) |>
+      dplyr::transmute(.data$period, .data$category,
+                       nom_truth = .data$nom_mean) |>
+      dplyr::distinct()
+    truth <- panel_truth
+  }
 
   scored <- bt |>
     dplyr::left_join(truth, by = c("period", "category"),
@@ -64,8 +92,21 @@ score_backtest <- function(backtest_runs, db_path, cfg) {
 latest_truth_nom <- function(db_path) {
   raw <- vintages_read_asof(db_path, "nom", Sys.Date())
   if (nrow(raw) == 0L) {
-    return(tibble::tibble(period = as.Date(character()),
-                          category = character(), nom_truth = numeric()))
+    # Pseudo-real-time fallback: read NOM live and treat it as truth.
+    nom_live <- tryCatch(fetch_nom(config::get(file = "config.yml"),
+                                   Sys.Date()),
+                         error = function(e) NULL)
+    if (is.null(nom_live) || !nrow(nom_live)) {
+      return(tibble::tibble(period = as.Date(character()),
+                            category = character(), nom_truth = numeric()))
+    }
+    return(
+      nom_live |>
+        dplyr::filter(.data$period_unit == "quarter") |>
+        dplyr::group_by(.data$period, .data$category) |>
+        dplyr::summarise(nom_truth = sum(.data$value, na.rm = TRUE),
+                         .groups = "drop")
+    )
   }
   meta <- purrr::map(raw$metadata, safe_fromJSON)
   raw$series <- vapply(meta, function(m) m$series %||% NA_character_, character(1))

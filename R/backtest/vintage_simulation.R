@@ -65,6 +65,22 @@ run_backtest <- function(asof_date, db_path, cfg) {
     visa_grants = vintages_read_asof(db_path, "visa_grants", asof_date),
     students    = vintages_read_asof(db_path, "students",    asof_date)
   )
+  # Pseudo-real-time mode: when no actual historical vintages have
+  # been captured yet (vintage store empty for this source at
+  # asof_date), fall back to the current data and filter by
+  # publication lag. This loses true revision-vintage realism but is
+  # the standard workaround for first-time backtesting before any
+  # vintages have accumulated.
+  pseudo_rt <- cfg$backtest$pseudo_real_time
+  if (is.null(pseudo_rt)) pseudo_rt <- TRUE
+  if (isTRUE(pseudo_rt)) {
+    if (!nrow(vintages$oad))  vintages$oad <- pseudo_vintage_read(cfg, "oad")
+    if (!nrow(vintages$nom))  vintages$nom <- pseudo_vintage_read(cfg, "nom")
+    if (!nrow(vintages$visa_grants))
+      vintages$visa_grants <- pseudo_vintage_read(cfg, "visa_grants")
+    if (!nrow(vintages$students))
+      vintages$students <- pseudo_vintage_read(cfg, "students")
+  }
   oad_lag <- cfg$abs$publication_lag_days$oad %||% 35
   nom_lag <- cfg$abs$publication_lag_days$nom %||% 183
   vg_lag  <- cfg$homeaffairs$publication_lag_days %||% 45
@@ -90,22 +106,52 @@ run_backtest <- function(asof_date, db_path, cfg) {
 
   abs_prelim <- benchmark_abs_preliminary(panel, cfg)
   rw         <- benchmark_random_walk(panel, cfg)
+  ar1        <- benchmark_ar1(panel, cfg)
+  bridge_fits <- tryCatch(benchmark_bridge(panel, cfg), error = function(e) list())
+  bridge_fc <- if (length(bridge_fits)) forecast_bridge(bridge_fits, panel, cfg) else tibble::tibble()
 
   horizons <- cfg$backtest$horizons %||% c(-2, -1, 0, 1)
   ref_q <- nn_quarter_start(asof_date - lubridate::days(1))
 
+  keeper <- horizons_at(ref_q, horizons)
+
   dplyr::bind_rows(
     head |>
       dplyr::mutate(model = "kalman_v1", category = "total") |>
-      dplyr::semi_join(horizons_at(ref_q, horizons), by = "period"),
+      dplyr::semi_join(keeper, by = "period"),
     cats |>
+      dplyr::filter(.data$category != "total") |>
       dplyr::mutate(model = "kalman_v1") |>
-      dplyr::semi_join(horizons_at(ref_q, horizons), by = "period"),
-    abs_prelim |> dplyr::mutate(model = "abs_preliminary"),
-    rw         |> dplyr::mutate(model = "random_walk")
+      dplyr::semi_join(keeper, by = "period"),
+    abs_prelim   |> dplyr::semi_join(keeper, by = "period") |>
+                    dplyr::mutate(model = "abs_preliminary"),
+    rw           |> dplyr::semi_join(keeper, by = "period") |>
+                    dplyr::mutate(model = "random_walk"),
+    ar1          |> dplyr::semi_join(keeper, by = "period") |>
+                    dplyr::mutate(model = "ar1"),
+    bridge_fc    |> dplyr::semi_join(keeper, by = "period") |>
+                    dplyr::mutate(model = "bridge")
   ) |>
     dplyr::mutate(asof_date = asof_date,
                   horizon   = quarters_between(.data$period, ref_q))
+}
+
+#' Fall back to current source data when the vintage store has none
+#' for the requested as-of date. Returns a tibble in the same schema
+#' [vintages_read_asof()] would emit.
+#' @keywords internal
+pseudo_vintage_read <- function(cfg, source) {
+  fetched <- switch(source,
+    oad         = fetch_oad(cfg, Sys.Date()),
+    nom         = fetch_nom(cfg, Sys.Date()),
+    visa_grants = fetch_visa_grants(cfg, Sys.Date()),
+    students    = fetch_student_data(cfg, Sys.Date()),
+    tibble::tibble()
+  )
+  if (!nrow(fetched)) return(tibble::tibble())
+  # Coerce to the vintage-store schema (period, period_unit, value,
+  # metadata + the original rich columns so reenrich is a no-op).
+  fetched
 }
 
 #' @keywords internal

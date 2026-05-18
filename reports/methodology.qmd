@@ -111,27 +111,52 @@ with category-level uncertainty propagated by the delta method,
 ignoring the (small at quarterly aggregation) covariance between
 arrivals and departures.
 
-## Phase 2 — multi-source state-space (scaffolded)
+## Phase 2 — multi-source state-space (v0.5)
 
-The Phase 1 model uses only OAD. Phase 2 extends the observation block
-to include DHA visa grants and Department of Education enrolments. The
-visa-grant equation introduces a parametric Gamma lag from latent
-arrivals to the grant date, jointly estimated:
+### What's wired up
+
+Phase 2 v0.5 extends the pipeline along three dimensions:
+
+1. **Damped trend Kalman.** The default trend in
+   `fit_kalman_univariate()` is now a damped local linear specification
+   $\mu_t = \mu_{t-1} + \delta_{t-1} + u_t$,
+   $\delta_t = \phi\,\delta_{t-1} + v_t$ with $\phi \approx 0.85$, so
+   out-of-sample slope decays toward zero. The standard local-linear
+   ($\phi=1$) is retained as a `trend_type` option but is too volatile
+   at the long horizons NOM nowcasting needs.
+
+2. **DHA visa grants as a leading indicator.** The CKAN-based fetcher
+   at [R/ingest/fetch_dha_ckan.R](../R/ingest/fetch_dha_ckan.R) pulls
+   the BP00 visa-program reports from data.gov.au. These are annual
+   financial-year pivots; the panel builder broadcasts each annual
+   value evenly across the four quarters of the FY (an obvious
+   simplification — true quarterly disaggregation is Phase 3 work).
+
+3. **Bridge regression with visa-grants signal.** The benchmark in
+   [R/models/bridge_regression.R](../R/models/bridge_regression.R) now
+   fits
+   $$
+   \mathrm{NOM}_{q} = \alpha + \sum_{k=0}^{K} \beta_k\,A^{OAD,LT}_{q-k} + \sum_{k=0}^{K} \gamma_k\,V_{q-k} + \varepsilon_q
+   $$
+   at the aggregate (`category == "total"`) level. With $K=4$, in-sample
+   $R^2 \approx 0.87$ on the latest live data.
+
+### Original target specification (Phase 2 v1.0 — open work)
+
+The full Phase 2 design called for a multivariate state-space model
+with a parametric Gamma lag from latent arrivals to visa grants:
 
 $$
 V_{c,t} = \kappa_c \sum_{k=0}^{K_c} w_{c,k}(\alpha_c, \beta_c)\, A^*_{c,t+k} + \varepsilon^V_{c,t}
 $$
 
-and the student-enrolments block links to the latent student-arrivals
-state with a fixed lag $\ell$:
-
-$$
-E_t = \kappa_E \cdot A^*_{c=\text{student},t-\ell} + \varepsilon^E_t.
-$$
-
-Hyperparameter pooling enters through partial pooling on
-$\sigma_{u,c}$, $\sigma_{v,c}$. Estimation in `KFAS` is feasible but
-fiddly; the scaffold is at [R/models/kalman_multi.R](../R/models/kalman_multi.R).
+and a fixed-lag student-enrolments block. Joint MLE in `{KFAS}` is
+feasible but requires substantial care with identification and
+initialisation. The scaffold remains at
+[R/models/kalman_multi.R](../R/models/kalman_multi.R); the bridge
+regression captures the headline information value of visa grants
+without the multivariate state machinery, and the headline backtest
+shows it materially beats the Kalman on backcasts (see Section 8).
 
 ## Phase 3 — Bayesian hierarchical model (scaffolded)
 

@@ -26,6 +26,24 @@
 #' @param cfg Project config.
 #' @return Quarterly panel tibble.
 #' @export
+#' Expand a (period = FY-start, value) row into 4 equal-quarter rows
+#'
+#' Helper used by [build_quarterly_panel()] to handle annual visa-grant
+#' inputs. Each FY-start date (1 July YYYY) becomes four quarterly
+#' periods within that FY (Jul, Oct, Jan, Apr), each carrying 1/4 of
+#' the annual value.
+#' @keywords internal
+spread_annual_to_quarters <- function(df) {
+  if (!nrow(df)) return(tibble::tibble(period = as.Date(character()),
+                                       value = numeric()))
+  out <- purrr::map_dfr(seq_len(nrow(df)), function(i) {
+    fy_start <- as.Date(df$period[i])
+    qs <- seq.Date(fy_start, by = "3 months", length.out = 4L)
+    tibble::tibble(period = qs, value = df$value[i] / 4)
+  })
+  out
+}
+
 build_quarterly_panel <- function(oad_clean, nom_clean,
                                   visa_grants_clean, students_clean, cfg) {
   levels <- unique(c(cfg$categories$levels, "total"))
@@ -66,11 +84,28 @@ build_quarterly_panel <- function(oad_clean, nom_clean,
                                               .data$nom_revised,
                                               .data$nom_preliminary))
 
-  vg_q <- visa_grants_clean |>
-    dplyr::mutate(quarter = nn_quarter_start(.data$period)) |>
-    dplyr::group_by(.data$quarter, .data$category) |>
-    dplyr::summarise(visa_grants = sum(.data$value, na.rm = TRUE), .groups = "drop") |>
-    dplyr::rename(period = "quarter")
+  # Visa grants may be monthly OR annual (data.gov.au DHA pivots are
+  # annual). Convert annual values to a quarterly profile by spreading
+  # evenly across the 4 financial-year quarters; monthly values sum to
+  # quarters in the usual way.
+  vg_unit <- if (nrow(visa_grants_clean) &&
+                 "period_unit" %in% names(visa_grants_clean)) {
+    unique(stats::na.omit(visa_grants_clean$period_unit))[1] %||% "month"
+  } else "month"
+  vg_q <- if (identical(vg_unit, "year")) {
+    visa_grants_clean |>
+      dplyr::group_by(.data$category) |>
+      dplyr::group_modify(~ spread_annual_to_quarters(.x)) |>
+      dplyr::ungroup() |>
+      dplyr::rename(visa_grants = "value")
+  } else {
+    visa_grants_clean |>
+      dplyr::mutate(quarter = nn_quarter_start(.data$period)) |>
+      dplyr::group_by(.data$quarter, .data$category) |>
+      dplyr::summarise(visa_grants = sum(.data$value, na.rm = TRUE),
+                       .groups = "drop") |>
+      dplyr::rename(period = "quarter")
+  }
 
   stu_q <- students_clean |>
     dplyr::filter(.data$sector %in% c("Higher Education", "Higher Ed", "VET",

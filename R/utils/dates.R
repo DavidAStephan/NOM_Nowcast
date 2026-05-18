@@ -62,14 +62,15 @@ nn_quarter_seq <- function(from, to) {
 #' @param lag_days Numeric publication lag in days.
 #' @return A `Date` — the first date at which the value is observable.
 #' @export
-nn_first_observable <- function(period, period_unit = c("month", "quarter"),
+nn_first_observable <- function(period,
+                                period_unit = c("month", "quarter", "year"),
                                 lag_days = 0) {
   period_unit <- match.arg(period_unit)
-  period_end <- if (period_unit == "month") {
-    lubridate::ceiling_date(period, unit = "month") - lubridate::days(1)
-  } else {
-    lubridate::ceiling_date(period, unit = "quarter") - lubridate::days(1)
-  }
+  period_end <- switch(period_unit,
+    month   = lubridate::ceiling_date(period, unit = "month")   - lubridate::days(1),
+    quarter = lubridate::ceiling_date(period, unit = "quarter") - lubridate::days(1),
+    year    = lubridate::ceiling_date(period, unit = "year")    - lubridate::days(1)
+  )
   period_end + lubridate::days(lag_days) + lubridate::days(1)
 }
 
