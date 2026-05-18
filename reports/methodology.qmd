@@ -1,0 +1,212 @@
+---
+title: "NOM Nowcast — Methodology"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Scope and audience
+
+This document describes the modelling pipeline that produces the
+quarterly NOM nowcasts in [nowcast_report.html](nowcast_report.html). It
+is written for an audience already familiar with state-space models,
+nowcasting, the ABS 12/16-month rule and the Australian visa system.
+
+## The measurement problem
+
+The ABS defines a migrant as a person whose actual or intended duration
+of stay in (or absence from) Australia is at least 12 months within a
+16-month reference window (the **12/16 rule**). Three implications:
+
+1. **No arrival can be definitively classified as a migrant until ~16
+   months after it occurs.** Until then, classification is provisional.
+2. **ABS preliminary NOM estimates revise heavily** as later observation
+   accumulates. Revisions of 10–30% are common in normal times and were
+   much larger during 2020–22.
+3. **The right modelling object is a probability**: for cohort
+   `(category c, period t)`, what is the probability $\pi_{c,t}$ that
+   the cohort eventually clears 12/16 and counts as NOM?
+
+Individual-level stay-duration data lives in PLIDA and is out of scope.
+We work with the aggregate counts that ABS, DHA, the Department of
+Education and BITRE publish, and we estimate $\pi_{c,t}$ indirectly.
+
+## Data sources
+
+| Source                                  | Released | Lag (days) | Use |
+|-----------------------------------------|----------|------------|-----|
+| ABS OAD (cat. 3401.0)                   | monthly  | ~35        | latent flow target |
+| ABS NOM (cat. 3101.0)                   | quarterly| ~183       | modelling target |
+| DHA visa grants                         | monthly  | ~45        | leading indicator |
+| Dept Education student commencements    | monthly  | ~35        | student leading indicator |
+| BITRE international airline activity    | monthly  | ~60        | capacity constraint |
+| DHA TWH / WHM aggregates                | quarterly| ~45        | cross-validation |
+
+All sources are public.
+
+## Notation
+
+- $A^{OAD,LT}_{c,t}$ — OAD long-term arrivals in visa category $c$,
+  month $t$.
+- $D^{OAD,LT}_{c,t}$ — analogous departures.
+- $V_{c,t}$ — DHA visa grants.
+- $E_t$ — total student enrolments.
+- $\mathrm{NOM}^{ABS}_{c,q}$ — ABS NOM estimate, category $c$, quarter
+  $q$, latest vintage.
+- $\widehat{\pi}_{c,t}$ — estimated classification probability.
+
+Sums over the months in a quarter use $t \in q$.
+
+## Empirical classification probability
+
+For each completed cohort
+$\widehat{\pi}_{c,q} = \mathrm{NOM}_{c,q}^{ABS} / \sum_{t \in q} A^{OAD,LT}_{c,t}$.
+
+We treat a cohort as "completed" when the reference period is at least
+`pi.completion_quarters` (default: 6) quarters older than the latest
+panel observation, giving ABS NOM time to settle. The point estimates
+are then smoothed within regime, using LOESS by default. Regimes are
+defined by the border-closure (2020-Q1) and reopening (2022-Q1)
+breakpoints. Forward projection carries the last smoothed value
+forward, with uncertainty propagated via the smoother's standard
+errors.
+
+The smoothing choice matters substantively: $\pi$ shifted dramatically
+across COVID, and getting the regime break wrong dominates everything
+else in 2020 backcasts. See [backtest_report.html](backtest_report.html)
+for the comparison.
+
+## Phase 1 — univariate Kalman filter
+
+For each category $c$ we fit a Basic Structural Model on
+$\log(1 + A^{OAD,LT}_{c,t})$:
+
+$$
+\begin{aligned}
+y_{c,t} &= \log(1 + A^{OAD,LT}_{c,t}) = \mu_{c,t} + \gamma_{c,t} + \varepsilon_{c,t} \\
+\mu_{c,t} &= \mu_{c,t-1} + \delta_{c,t-1} + u_{c,t} \\
+\delta_{c,t} &= \delta_{c,t-1} + v_{c,t} \\
+\gamma_{c,t} &= -\sum_{s=1}^{11} \gamma_{c,t-s} + w_{c,t}
+\end{aligned}
+$$
+
+with innovations independent normal. Departures use an identical
+specification on $\log(1 + D^{OAD,LT}_{c,t})$. We estimate
+hyperparameters by MLE via `KFAS::fitSSM()`.
+
+The NOM nowcast follows from
+$$
+\widehat{\mathrm{NOM}}_{c,q}
+= \widehat{\pi}_{c,q}
+  \left[\sum_{t \in q} \widehat{A^*}_{c,t} - \sum_{t \in q} \widehat{D^*}_{c,t}\right]
+$$
+with category-level uncertainty propagated by the delta method,
+ignoring the (small at quarterly aggregation) covariance between
+arrivals and departures.
+
+## Phase 2 — multi-source state-space (scaffolded)
+
+The Phase 1 model uses only OAD. Phase 2 extends the observation block
+to include DHA visa grants and Department of Education enrolments. The
+visa-grant equation introduces a parametric Gamma lag from latent
+arrivals to the grant date, jointly estimated:
+
+$$
+V_{c,t} = \kappa_c \sum_{k=0}^{K_c} w_{c,k}(\alpha_c, \beta_c)\, A^*_{c,t+k} + \varepsilon^V_{c,t}
+$$
+
+and the student-enrolments block links to the latent student-arrivals
+state with a fixed lag $\ell$:
+
+$$
+E_t = \kappa_E \cdot A^*_{c=\text{student},t-\ell} + \varepsilon^E_t.
+$$
+
+Hyperparameter pooling enters through partial pooling on
+$\sigma_{u,c}$, $\sigma_{v,c}$. Estimation in `KFAS` is feasible but
+fiddly; the scaffold is at [R/models/kalman_multi.R](../R/models/kalman_multi.R).
+
+## Phase 3 — Bayesian hierarchical model (scaffolded)
+
+The full target specification moves to Stan via `{cmdstanr}` with:
+
+- partial pooling across categories on innovation variances,
+- a random-walk (eventually GP) prior on $\mathrm{logit}\,\pi_{c,t}$
+  with a 16-quarter length-scale,
+- a vintage-aware NOM observation block:
+  $\mathrm{Var}(\mathrm{NOM}^{ABS}_{q,v}) = \sigma^2_r(v - q)$,
+- full posterior summaries on every reported quantity.
+
+Stan source: [stan/hierarchical_nom.stan](../stan/hierarchical_nom.stan).
+Status: scaffold compiles but is not yet calibrated against the v1
+panel. Calibration plan documented in the file header.
+
+## Phase 4 — bridge regression benchmarks
+
+OLS specification per category:
+
+$$
+\mathrm{NOM}_{c,q}
+= \alpha_c
+  + \sum_{k=0}^{K} \beta_{c,k} A^{OAD,LT}_{c,q-k}
+  + \sum_{k=0}^{K} \gamma_{c,k} V_{c,q-k}
+  + \varepsilon_{c,q}.
+$$
+
+We use `{fixest}` for the fits. The bridge regression is *not* a
+candidate model — it is an interpretable baseline that the structural
+model is required to beat. If it doesn't, that's a useful finding.
+
+## Vintage-aware backtesting
+
+For each evaluation date $T$ on a quarterly grid from
+`backtest.start` to the latest completed quarter:
+
+1. Restrict every input series to observations with
+   `period + period_length + publication_lag <= T`.
+2. Restrict ABS NOM to its vintage as at $T$.
+3. Re-estimate every model.
+4. Produce backcast (h ∈ {−2, −1}), nowcast (h = 0) and one-step
+   forecast (h = +1).
+5. Score against (a) the eventually-revised final NOM and
+   (b) — most importantly — the ABS preliminary value available at $T$.
+
+Metrics: RMSE, MAE, bias, hit rate of QoQ change, log score
+(probabilistic models only). Broken down by regime (pre-COVID, COVID,
+post-COVID) and by category.
+
+## Known limitations
+
+- $\pi$ is unobserved at individual level. Our indirect estimate has
+  substantial uncertainty during regime breaks; intervals during
+  2020–22 should be regarded as lower bounds on true uncertainty.
+- Home Affairs and Department of Education publication formats have
+  changed multiple times. The scrapers are defensive but failures
+  during a format change degrade gracefully (fallback to cached
+  vintage with a warning); they do not crash the pipeline.
+- ABS NOM ground truth is itself a moving target. "Final" in the
+  backtest means the latest vintage available at report run time.
+
+## Reproducibility
+
+- Dependency set pinned in `renv.lock`.
+- Pipeline DAG in [_targets.R](../_targets.R); compute graph render
+  via `targets::tar_visnetwork()`.
+- Raw downloads are immutable; never overwritten.
+- No `setwd`, no `rm(list=ls())`, no manual data steps.
+
+## Pipeline DAG
+
+```{r tar-viz, eval=FALSE}
+# Embed the rendered DAG when building this report from a live targets
+# store. Left chunkwise eval-false in the source so the report renders
+# cleanly even before the pipeline has been run.
+targets::tar_visnetwork()
+```

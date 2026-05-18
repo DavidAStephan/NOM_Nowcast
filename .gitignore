@@ -1,0 +1,53 @@
+# R / RStudio
+.Rhistory
+.Rapp.history
+.RData
+.Rproj.user/
+*.Rproj
+.Ruserdata
+
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+
+# targets
+_targets/
+!_targets.R
+!_targets.yaml
+
+# Pipeline data – immutable raw downloads and vintages are gitignored by
+# default. Override with `git add -f` if you need to ship a sample.
+data/raw/*
+data/vintages/*
+data/processed/*
+!data/raw/.gitkeep
+!data/vintages/.gitkeep
+!data/processed/.gitkeep
+.cache/
+
+# Stan compiled artifacts
+stan/*.exe
+stan/*.o
+stan/*.hpp
+stan/*.so
+
+# Reports build artifacts
+reports/*_files/
+reports/*.html
+reports/*_cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Env
+.env
+.Renviron

@@ -1,0 +1,60 @@
+Package: nomnowcast
+Title: Nowcasting Australian Net Overseas Migration
+Version: 0.1.0
+Authors@R: person("Project", "Maintainer", email = "maintainer@example.com", role = c("aut", "cre"))
+Description: Reproducible R pipeline for nowcasting quarterly Australian Net
+    Overseas Migration (NOM) using only publicly available data. Combines
+    Overseas Arrivals and Departures, Department of Home Affairs visa
+    grants, Department of Education student enrolments and BITRE airline
+    activity with state-space and Bayesian hierarchical models, under a
+    vintage-aware backtesting framework.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.3)
+Imports:
+    arrow,
+    cli,
+    config,
+    digest,
+    jsonlite,
+    scales,
+    dplyr,
+    duckdb,
+    DBI,
+    fixest,
+    fs,
+    ggplot2,
+    glue,
+    gt,
+    httr2,
+    KFAS,
+    lubridate,
+    posterior,
+    purrr,
+    readabs,
+    readr,
+    readxl,
+    rlang,
+    rvest,
+    stringr,
+    targets,
+    tarchetypes,
+    tibble,
+    tidyr,
+    tsibble,
+    yaml
+Suggests:
+    bayesplot,
+    cmdstanr,
+    crew,
+    knitr,
+    lintr,
+    mockery,
+    quarto,
+    rmarkdown,
+    styler,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

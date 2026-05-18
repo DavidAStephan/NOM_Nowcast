@@ -1,0 +1,116 @@
+default:
+  # ----- Paths -----
+  paths:
+    raw: "data/raw"
+    vintages: "data/vintages"
+    processed: "data/processed"
+    duckdb: "data/vintages/nomnowcast.duckdb"
+    cache: ".cache"
+
+  # ----- Run-time -----
+  run:
+    asof_date: ~          # NULL => Sys.Date(); override for vintage replay
+    log_level: "info"
+    parallel_workers: 4
+    http_retries: 4
+    http_backoff_seconds: [1, 4, 16, 64]
+    user_agent: "nomnowcast (+https://github.com/your-org/nom-nowcast)"
+
+  # ----- Source endpoints -----
+  # ABS time-series IDs change occasionally. The fetchers look these up by
+  # catalogue + table label first, and fall back to these IDs if the lookup
+  # fails. Update here when ABS reissues a table.
+  abs:
+    oad_cat: "3401.0"
+    oad_tables:
+      arrivals_departures_total: "01"
+      arrivals_by_visa: "11"          # short-term + long-term by visa group
+      arrivals_by_country: "06"
+      departures_by_country: "08"
+    nom_cat: "3101.0"
+    nom_tables:
+      nom_quarterly: "9"
+      nom_by_visa: "9.1"
+    publication_lag_days:
+      oad: 35      # OAD released ~5 weeks after reference month
+      nom: 183     # NOM released ~6 months after reference quarter
+
+  homeaffairs:
+    visa_grants_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/visa-grants"
+    twh_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/live/temporary-visa-holders"
+    wh_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/work/working-holiday-maker"
+    publication_lag_days: 45
+
+  education:
+    students_index: "https://www.education.gov.au/international-education-data-and-research/international-student-data"
+    publication_lag_days: 35
+
+  bitre:
+    airline_activity_index: "https://www.bitre.gov.au/statistics/aviation/international_airline_activity_monthly"
+    publication_lag_days: 60
+
+  # ----- Categories -----
+  categories:
+    # Canonical taxonomy used downstream. See R/clean/category_map.R for the
+    # mapping from raw visa codes / OAD visa groups / DHA visa subclasses.
+    levels:
+      - student
+      - skilled
+      - working_holiday
+      - family
+      - nz_citizen
+      - bridging
+      - other_temp
+      - permanent
+      - returning_au
+      - other
+
+  # ----- pi (classification probability) -----
+  pi:
+    # Quarters of observation required before a cohort is "complete" enough
+    # for empirical pi estimation. ABS uses 12/16 so 16 months ~ 6 quarters.
+    completion_quarters: 6
+    smoother: "loess"      # one of: loess, hp, locallinear, none
+    loess_span: 0.30
+    hp_lambda: 1600
+    regime_breaks:
+      - "2020-03-01"       # border closure
+      - "2022-03-01"       # reopening
+    floor: 0.0
+    ceiling: 1.5           # > 1 possible if OAD undercounts a cohort
+
+  # ----- Modelling -----
+  models:
+    kalman:
+      seasonal_period: 12
+      include_ar1_irregular: true
+      categories_to_fit: ~     # NULL => all
+    bridge:
+      max_lag_quarters: 4
+    stan:
+      chains: 4
+      iter_warmup: 1000
+      iter_sampling: 1000
+      adapt_delta: 0.95
+      max_treedepth: 12
+
+  # ----- Backtesting -----
+  backtest:
+    start: "2010-01-01"
+    end: ~                 # NULL => last completed quarter at asof_date
+    horizons:              # quarters relative to evaluation date
+      - -2                 # backcast
+      - -1
+      -  0                 # nowcast
+      -  1                 # 1-step forecast
+    regimes:
+      pre_covid:  ["1900-01-01", "2019-12-31"]
+      covid:      ["2020-01-01", "2021-12-31"]
+      post_covid: ["2022-01-01", "2099-12-31"]
+    save_predictions: true
+
+  # ----- Reporting -----
+  reporting:
+    asof_label_fmt: "%d %B %Y"
+    headline_ci: 0.80
+    secondary_ci: 0.95
