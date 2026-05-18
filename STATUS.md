@@ -1,0 +1,291 @@
+# nomnowcast — session status
+
+**Last touched:** 2026-05-18
+**Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
+**Latest commit:** `b717c3a` — Phase 2 v0.5
+**R version pinned:** 4.5.3 via `renv.lock` (123 packages)
+
+## TL;DR — what you have
+
+A working R / `{targets}` pipeline that nowcasts quarterly Australian NOM
+from live ABS + DHA public data, with vintage-aware backtesting,
+benchmarks (RW, AR(1), bridge), and three Quarto reports. All 35 tests
+pass.
+
+**Headline backtest result** (pseudo-real-time, 11 quarterly dates,
+2023-Q1 → 2025-Q3, target = ABS quarterly NOM total):
+
+| Model                | h=-2 RMSE | h=-1 RMSE | h=0 RMSE |
+|----------------------|----------:|----------:|---------:|
+| **bridge** (OAD + visa grants) | **21,511** | **25,656** | (NA) |
+| random walk          | 39,188    | 46,857    | (NA)     |
+| AR(1)                | 48,150    | –         | –        |
+| kalman_v1 (damped)   | 57,432    | 60,585    | 78,949   |
+
+The bridge regression with visa-grants as a leading indicator beats
+the Kalman by ~2.5× on backcasts. This is the result that motivates
+Phase 2 v1.0 (give the Kalman the visa-grants signal too).
+
+In-sample headline performance against ABS NOM, latest 8 completed
+quarters: errors within ±13%. Out-of-sample 2025: model over-shoots
+by ~75-90% because ABS revised NOM down faster than the Kalman trend
+could adapt (no leading indicators in the v0.5 Kalman).
+
+## Phase status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| **Phase 0** scaffold | ✅ done | DESCRIPTION, renv, _targets.R, config.yml, dirs |
+| **Phase 1** univariate Kalman | ✅ done + calibrated against live ABS |
+| **Phase 2 v0.5** | ✅ done | damped trend, CKAN visa grants, bridge regression, real backtest |
+| **Phase 2 v1.0** | ⏳ open | true multivariate SSM with Gamma-lag visa grants in KFAS |
+| **Phase 3** | ⏳ scaffolded | `stan/hierarchical_nom.stan` compiles but not calibrated |
+| **Phase 4** | ✅ effectively done | bridge regression is the benchmark |
+
+## How to run things
+
+```r
+# From the project root, ensure the renv library is active:
+renv::restore()           # one-time, ~10 min
+
+# Run the pipeline end-to-end:
+targets::tar_make()       # fetches ABS + DHA, runs all models, builds reports
+
+# Quick smoke tests (no targets cache):
+source(".tmp_run_tests.R")    # testthat suite (regenerate from STATUS.md if cleaned up)
+```
+
+Sanity-check the headline against ABS:
+
+```r
+files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
+for (f in files) sys.source(f, envir = globalenv())
+cfg <- config::get(file = "config.yml")
+oad <- fetch_oad(cfg, Sys.Date())
+nom <- fetch_nom(cfg, Sys.Date())
+panel <- build_quarterly_panel(clean_oad(oad, cfg), clean_nom(nom, cfg),
+                               empty_vg_clean(), empty_students_clean(), cfg)
+pi_emp <- estimate_pi_empirical(panel, cfg)
+pi_sm  <- smooth_pi(pi_emp, cfg)
+fits   <- fit_kalman_univariate(panel, cfg)
+fc     <- forecast_kalman_univariate(fits, Sys.Date(), cfg)
+cats   <- build_nowcast_categories(fc, pi_sm, cfg)
+head   <- build_nowcast_headline(cats, cfg)
+print(head |> tail(8))
+```
+
+## Architecture map
+
+```
+R/
+├── ingest/
+│   ├── fetch_oad.R               # ABS OAD data cubes (Tables 1/2 + 15/16)
+│   ├── fetch_nom.R               # ABS quarterly NOM + annual NOM-by-visa
+│   ├── fetch_dha_ckan.R          # data.gov.au CKAN visa-grant XLSXs
+│   ├── fetch_visa_grants.R       # delegates to CKAN; HTML fallback
+│   ├── fetch_student_data.R      # Department of Education — currently 404s
+│   ├── fetch_bitre.R             # BITRE aviation — currently 404s
+│   └── fetch_temp_visa_holders.R # DHA TWH/WHM stocks
+├── clean/
+│   ├── category_map.R            # canonical visa-category regex table
+│   ├── clean_*.R                 # one cleaner per source
+│   └── panel.R                   # build_quarterly_panel — the modelling input
+├── vintages/
+│   ├── store.R                   # DuckDB vintage store interface
+│   └── reenrich.R                # re-derive category/direction from series_id
+├── pi/
+│   ├── empirical_pi.R            # NOM / OAD-net long-term ratio
+│   ├── smooth_pi.R               # LOESS/HP/local-linear smoothing with regime breaks
+│   └── project_pi.R              # forward projection (currently inlined in nowcast_assembly)
+├── models/
+│   ├── kalman_univariate.R       # Phase 1 + damped trend (default)
+│   ├── kalman_multi.R            # Phase 2 v1.0 scaffold
+│   ├── bridge_regression.R       # OAD + visa grants → NOM benchmark
+│   ├── stan_hierarchical.R       # Phase 3 wrapper around cmdstanr
+│   └── nowcast_assembly.R        # π × (arrivals - departures) + uncertainty
+├── backtest/
+│   ├── vintage_simulation.R      # run_backtest (+ pseudo-real-time mode)
+│   ├── benchmark_models.R        # RW, AR(1), ABS-preliminary
+│   └── score_forecasts.R         # RMSE / MAE / bias / hit rate / log score
+├── viz/plots.R
+└── utils/                        # dates, http, logging
+stan/
+└── hierarchical_nom.stan         # Phase 3 model (compiles, not yet calibrated)
+tests/testthat/                   # 35 tests
+reports/                          # nowcast / methodology / backtest Quarto
+```
+
+## Key technical context — read this before resuming
+
+### 1. ABS migrated away from time-series spreadsheets (2025-ish)
+
+`readabs::read_abs(cat_no = "3401.0", ...)` no longer works — it raises
+"Cannot find valid entry in the ABS Time Series Directory". Everything
+now ships as Excel "data cubes". Slug-based identifiers replace numeric
+catalogues:
+
+- `overseas-arrivals-and-departures-australia` — OAD
+- `national-state-and-territory-population` — quarterly NOM total
+- `overseas-migration` — annual NOM by (4) broad visa groups
+
+We use `readabs::download_abs_data_cube()` and parse the XLSXs
+ourselves. See [R/ingest/fetch_oad.R](R/ingest/fetch_oad.R) and
+[R/ingest/fetch_nom.R](R/ingest/fetch_nom.R).
+
+### 2. ABS doesn't publish quarterly NOM by visa anymore
+
+The detailed quarterly visa breakdown is gone. NOM-by-visa is now only
+in the annual `overseas-migration` cube and only with 4 categories
+(NZ / permanent / temporary / Australian citizens). The aggregate-π
+estimator broadcasts a single π across categories
+([R/pi/empirical_pi.R:25](R/pi/empirical_pi.R)).
+
+### 3. DHA visa grants live at data.gov.au, NOT homeaffairs.gov.au
+
+DHA has retired the static-XLSX download pages. The actual data lives
+on data.gov.au's CKAN API:
+
+```
+https://data.gov.au/data/api/3/action/package_search?q=Student+visa+program
+```
+
+(NB: only the `/data/` path works; `data.gov.au/api/3/...` and
+`data.gov.au/api/...` both return 404.)
+
+See [R/ingest/fetch_dha_ckan.R](R/ingest/fetch_dha_ckan.R). Files are
+annual financial-year pivot tables; we broadcast them equally across
+quarters for now.
+
+### 4. Department of Education + BITRE are currently 404
+
+`education.gov.au` and `bitre.gov.au` both return Stream errors or 404s
+on the URLs in `config.yml`. The fetchers degrade gracefully to empty
+tibbles. Wiring these up is open work — possibly the data is on
+data.gov.au too.
+
+### 5. KFAS formula quirks
+
+`KFAS::SSModel(y ~ KFAS::SSMtrend(...))` does **not** work — the
+formula walker doesn't accept `pkg::fn` syntax. Workarounds:
+
+- Import locally: `SSMtrend <- KFAS::SSMtrend` inside the function
+- For `SSMcustom`, matrices must be 3D arrays `(p × m × n)` with
+  `n = 1` for time-invariant
+- See [R/models/kalman_univariate.R](R/models/kalman_univariate.R) —
+  `build_damped_ssmodel()` works around both quirks
+
+### 6. lubridate gotchas
+
+`lubridate::quarters()` does **not** exist (only `years()`, `months()`,
+etc.). Use `seq.Date(..., by = "-3 months", ...)` for quarter
+arithmetic. `lubridate::my()` is permissive enough to match "May 10"
+inside a footnote string — use a strict header-row detector (see
+`detect_oad_header_row()` in [R/ingest/fetch_oad.R](R/ingest/fetch_oad.R)).
+
+### 7. `nn_info` / `nn_warn` and `cli` envir
+
+`cli::cli_alert_info("... {var}")` interpolates from
+`parent.frame()`. If you wrap it (`nn_info <- function(...) cli::cli_alert_info(...)`)
+you lose one frame and `var` becomes invisible. The current code
+passes `.envir = parent.frame()` explicitly — preserve that pattern.
+
+## Open work — prioritised
+
+### High-impact next steps
+
+1. **Implement true Phase 2 v1.0 multivariate SSM in KFAS.**
+   The bridge regression already shows visa-grants buys ~2.5× RMSE
+   reduction on backcasts. Wiring that signal into the Kalman state
+   equation (so the Kalman also benefits) is the natural next step.
+   Spec already in `stan/hierarchical_nom.stan` and the methodology
+   doc. The Gamma-lag parametric form
+   $V_{c,t} = \kappa_c \sum_k w_k(\alpha, \beta) A^*_{c,t+k} + \varepsilon$
+   is the headline missing piece.
+   - File: [R/models/kalman_multi.R](R/models/kalman_multi.R) (scaffold)
+   - File: [R/models/kalman_univariate.R](R/models/kalman_univariate.R)
+     (turn the current `SSModel(y ~ ...)` into multivariate with an
+     OAD observation row and a visa-grants observation row)
+
+2. **Quarterly disaggregation of DHA grants.** Currently the annual
+   FY pivots are broadcast as equal quarters. The pivot files'
+   "Financial Year Quarter" filter is set to `(All)` — there's
+   probably a way to download per-quarter views, or we could fit a
+   monthly-via-OAD disaggregation. See
+   [R/clean/panel.R](R/clean/panel.R) `spread_annual_to_quarters()`.
+
+3. **Real ABS release-metadata read for `nom_classify_status`.**
+   Currently age-based heuristic
+   ([R/ingest/fetch_nom.R](R/ingest/fetch_nom.R) `nom_classify_status`).
+   ABS release notes give the true preliminary/revised/final markers.
+   This matters for proper vintage-aware backtest scoring.
+
+4. **Validate Stan model end-to-end.** The model in
+   [stan/hierarchical_nom.stan](stan/hierarchical_nom.stan) compiles
+   but has never been sampled against the v1 panel. Needs cmdstanr
+   installation (CRAN doesn't have it — pull from
+   `stan-dev.r-universe.dev`), then run a small chain count and check
+   divergences. Bayesian credible intervals on the headline would be
+   a real upgrade.
+
+### Lower-impact but useful
+
+5. **Re-wire Department of Education + BITRE fetchers** to whatever
+   their actual current URLs are. data.gov.au is likely.
+6. **Capture vintages going forward.** The DuckDB store is set up but
+   only contains today's data. Once you run the pipeline weekly for
+   a few months you'll have real vintages and the pseudo-real-time
+   backtest can transition to a true vintage-aware backtest.
+7. **Granular NOM-by-visa annual π.** The annual NOM-by-visa cube
+   gives 4 visa groups (NZ / permanent / temporary / Aust citizens).
+   The aggregate-π fallback ignores this — using the annual values to
+   refine category-level π is straightforward.
+8. **`benchmark_ar1` doesn't forecast forward.** It only emits
+   in-sample fitted values, so backtest h=0/+1 are NA for AR(1). Add
+   `predict()` for 4 steps ahead.
+9. **AR(1) on quarter-on-quarter growth currently uses `stats::arima`**
+   — `fitted.Arima` is in `{forecast}` not `{stats}`. Use
+   `g - residuals(fit)`, already done in
+   [R/backtest/benchmark_models.R](R/backtest/benchmark_models.R).
+10. **Re-add the 4 `.tmp_*.R` diagnostic scripts** if you find them
+    useful — they got cleaned up at commit time. Specifically a small
+    standalone "fetch + headline" runner is handy for sanity checks
+    independent of `{targets}`.
+
+### Known but acceptable limitations
+
+- π extrapolation past the completion cutoff uses a regime-aware
+  rolling median of the last 8 quarters
+  ([R/models/nowcast_assembly.R](R/models/nowcast_assembly.R)
+  `project_pi_value`). Robust to noise; not robust to genuine regime
+  shifts like the 2025 ABS NOM revision. Stan / hierarchical π will
+  do better here.
+- OAD Tables 15/16 (by visa) are total movements (short + long-term
+  + permanent), not long-term only. The aggregate "total" series from
+  Tables 1/2 IS Permanent + Long-term, which is the right NOM-relevant
+  flow — but only at the national, no-category-breakdown level.
+- The `secondary_ci` (95%) intervals are based on the model's internal
+  uncertainty only — they don't account for π misspecification at
+  regime breaks. Treat them as conservative.
+
+## Recent commits
+
+```
+b717c3a  Phase 2 v0.5: damped trend, CKAN visa grants, bridge w/ leading indicator
+29cbe65  Phase 1 calibration: aggregate long-term path; sensible nowcasts
+3046ec7  Live-validate Phase 1 against current ABS releases; lock deps
+1151ea6  Scaffold NOM nowcast pipeline (v0.1)
+```
+
+## What to do first when you resume
+
+1. `git log --oneline -5` — confirm you're on `b717c3a` (or later).
+2. `Rscript -e 'renv::status()'` — confirm the library matches the
+   lockfile.
+3. Re-run the headline sanity check (snippet at top) to confirm the
+   pipeline still flows end-to-end (ABS / data.gov.au URLs change
+   without warning).
+4. Decide between (a) Phase 2 v1.0 multivariate SSM or (b) Phase 3
+   Stan calibration as the next big push.
+
+Either path will produce a much better Kalman uncertainty
+characterisation than v0.5 has today.
