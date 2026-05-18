@@ -28,7 +28,7 @@
 #' @export
 build_quarterly_panel <- function(oad_clean, nom_clean,
                                   visa_grants_clean, students_clean, cfg) {
-  levels <- cfg$categories$levels
+  levels <- unique(c(cfg$categories$levels, "total"))
 
   oad_q <- oad_clean |>
     dplyr::mutate(quarter = nn_quarter_start(.data$period)) |>

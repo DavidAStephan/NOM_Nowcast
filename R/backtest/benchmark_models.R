@@ -8,12 +8,31 @@
 #' @return Tibble: `period`, `category`, `nom_mean`, `model`.
 #' @export
 benchmark_random_walk <- function(panel, cfg) {
-  panel |>
-    dplyr::filter(.data$category == "total") |>
+  total_panel(panel) |>
     dplyr::arrange(.data$period) |>
     dplyr::mutate(nom_mean = dplyr::lag(.data$nom_final),
                   model = "random_walk") |>
     dplyr::transmute(.data$period, .data$category, .data$nom_mean, .data$model)
+}
+
+#' Return a quarterly total NOM series.
+#'
+#' Prefers a row with `category == "total"`; falls back to summing over
+#' categories when total is absent.
+#' @keywords internal
+total_panel <- function(panel) {
+  totals <- panel |> dplyr::filter(.data$category == "total")
+  if (nrow(totals) && any(!is.na(totals$nom_final))) {
+    return(totals)
+  }
+  panel |>
+    dplyr::group_by(.data$period) |>
+    dplyr::summarise(
+      nom_final       = sum(.data$nom_final,       na.rm = TRUE),
+      nom_preliminary = sum(.data$nom_preliminary, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(category = "total")
 }
 
 #' AR(1)-on-growth benchmark
@@ -27,8 +46,8 @@ benchmark_random_walk <- function(panel, cfg) {
 #' @return Tibble: `period`, `category`, `nom_mean`, `model`.
 #' @export
 benchmark_ar1 <- function(panel, cfg) {
-  totals <- panel |>
-    dplyr::filter(.data$category == "total", !is.na(.data$nom_final)) |>
+  totals <- total_panel(panel) |>
+    dplyr::filter(!is.na(.data$nom_final)) |>
     dplyr::arrange(.data$period)
   if (nrow(totals) < 6L) {
     return(tibble::tibble(period = as.Date(character()),
@@ -43,7 +62,7 @@ benchmark_ar1 <- function(panel, cfg) {
                           category = "total",
                           nom_mean = y, model = "ar1"))
   }
-  fitted_g <- as.numeric(fitted(fit))
+  fitted_g <- as.numeric(g - stats::residuals(fit))
   fitted_y <- y[-length(y)] * (1 + fitted_g)
   tibble::tibble(
     period = totals$period[-1],
@@ -64,8 +83,7 @@ benchmark_ar1 <- function(panel, cfg) {
 #' @return Tibble: `period`, `category`, `nom_mean`, `model`.
 #' @export
 benchmark_abs_preliminary <- function(panel, cfg) {
-  panel |>
-    dplyr::filter(.data$category == "total") |>
+  total_panel(panel) |>
     dplyr::transmute(.data$period, .data$category,
                      nom_mean = .data$nom_preliminary,
                      model = "abs_preliminary")

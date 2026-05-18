@@ -17,10 +17,13 @@ test_that("nn_quarter_seq enumerates inclusive quarter starts", {
 })
 
 test_that("nn_first_observable accounts for period length and lag", {
+  # Jan 2024 monthly: period end = 2024-01-31, + 35 days lag, + 1 day to be
+  # first observable = 2024-03-07
   expect_equal(
     nn_first_observable(as.Date("2024-01-01"), "month", lag_days = 35),
-    as.Date("2024-03-06")
+    as.Date("2024-03-07")
   )
+  # Jan 2024 quarterly: period end = 2024-03-31, + 183 days, + 1 day
   expect_equal(
     nn_first_observable(as.Date("2024-01-01"), "quarter", lag_days = 183),
     as.Date("2024-10-01")

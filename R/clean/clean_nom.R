@@ -10,8 +10,13 @@
 #' @export
 clean_nom <- function(nom_raw, cfg) {
   if (is.null(nom_raw) || nrow(nom_raw) == 0L) return(empty_nom_clean())
-  nom_raw |>
-    dplyr::filter(!is.na(.data$value)) |>
+  # Restrict to quarterly observations only; the annual-by-visa cube is
+  # kept in the raw store and consumed separately by the pi estimator.
+  q <- nom_raw |>
+    dplyr::filter(!is.na(.data$value),
+                  is.na(.data$period_unit) | .data$period_unit == "quarter")
+  if (nrow(q) == 0L) return(empty_nom_clean())
+  q |>
     dplyr::group_by(.data$period, .data$category, .data$vintage_status) |>
     dplyr::summarise(value = sum(.data$value, na.rm = TRUE), .groups = "drop") |>
     dplyr::mutate(period_unit = "quarter")

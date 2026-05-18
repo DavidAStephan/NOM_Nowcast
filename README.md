@@ -124,6 +124,17 @@ preliminary estimate available at `T`.
   formats next change. Failures are logged but do not crash the pipeline.
 - ABS NOM final values are themselves revised; "ground truth" in the
   backtest means the latest vintage available at the report run time.
+- **ABS NOM by visa category is now only published annually**
+  (catalogue 3407.0; see `R/ingest/fetch_nom.R`). Quarterly NOM is total only.
+  The empirical π estimator therefore falls back to aggregate-π
+  (`NOM_total_q / net_OAD_total_q`) and broadcasts it across categories.
+  Category attribution is proportional to OAD shares — an honest
+  Phase-1 simplification, documented in the methodology report.
+- **OAD has migrated from time-series spreadsheets to Excel data cubes.**
+  Tables 15.9 (arrivals by visa group, Australia) and 16.9 (departures)
+  are total movements (short + long-term + permanent), not long-term
+  only. The model learns the empirical π relation regardless, but
+  matches the legacy long-term definition only approximately.
 
 ## Adding a new data source
 

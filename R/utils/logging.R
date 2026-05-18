@@ -8,19 +8,19 @@ NULL
 
 #' @rdname nn_log
 #' @export
-nn_info <- function(...) cli::cli_alert_info(...)
+nn_info <- function(...) cli::cli_alert_info(..., .envir = parent.frame())
 
 #' @rdname nn_log
 #' @export
-nn_success <- function(...) cli::cli_alert_success(...)
+nn_success <- function(...) cli::cli_alert_success(..., .envir = parent.frame())
 
 #' @rdname nn_log
 #' @export
-nn_warn <- function(...) cli::cli_alert_warning(...)
+nn_warn <- function(...) cli::cli_alert_warning(..., .envir = parent.frame())
 
 #' @rdname nn_log
 #' @export
-nn_danger <- function(...) cli::cli_alert_danger(...)
+nn_danger <- function(...) cli::cli_alert_danger(..., .envir = parent.frame())
 
 #' Time and log a code block
 #'

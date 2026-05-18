@@ -62,9 +62,14 @@ fit_one_kalman <- function(y, cfg) {
   seasonal_period <- cfg$models$kalman$seasonal_period %||% 4L
   include_ar1     <- isTRUE(cfg$models$kalman$include_ar1_irregular)
 
-  ssm <- KFAS::SSModel(
-    y ~ KFAS::SSMtrend(degree = 2, Q = list(NA, NA)) +
-        KFAS::SSMseasonal(period = seasonal_period, sea.type = "dummy", Q = NA),
+  # SSModel parses unqualified SSMtrend/SSMseasonal via custom term
+  # walking that doesn't recognise `pkg::fn`. Bring them in locally.
+  SSModel     <- KFAS::SSModel
+  SSMtrend    <- KFAS::SSMtrend
+  SSMseasonal <- KFAS::SSMseasonal
+  ssm <- SSModel(
+    y ~ SSMtrend(degree = 2, Q = list(NA, NA)) +
+        SSMseasonal(period = seasonal_period, sea.type = "dummy", Q = NA),
     H = NA
   )
 
@@ -151,8 +156,11 @@ forecast_one_kalman <- function(fit, periods, h_max) {
     )
   }
 
-  dplyr::bind_rows(in_sample, out_of_sample) |>
-    dplyr::mutate(
-      mean_level = expm1(.data$mean_log + 0.5 * .data$se_log^2)   # log-normal mean
-    )
+  out <- dplyr::bind_rows(in_sample, out_of_sample)
+  # Cap se_log so the log-normal conversion doesn't blow up at long
+  # forecast horizons where KFAS's predict() returns wide intervals.
+  out$se_log[!is.finite(out$se_log)] <- NA_real_
+  out$se_log <- pmin(out$se_log, 1.0, na.rm = FALSE)
+  out$mean_level <- expm1(out$mean_log + 0.5 * (out$se_log^2))
+  out
 }

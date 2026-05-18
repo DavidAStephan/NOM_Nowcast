@@ -70,10 +70,10 @@ run_backtest <- function(asof_date, db_path, cfg) {
   vg_lag  <- cfg$homeaffairs$publication_lag_days %||% 45
   stu_lag <- cfg$education$publication_lag_days %||% 35
 
-  oad_clean    <- clean_oad(restrict_to_asof(vintages$oad, asof_date, oad_lag), cfg)
-  nom_clean    <- clean_nom(restrict_to_asof(vintages$nom, asof_date, nom_lag), cfg)
-  vg_clean     <- clean_visa_grants(restrict_to_asof(vintages$visa_grants, asof_date, vg_lag), cfg)
-  stu_clean    <- clean_students(restrict_to_asof(vintages$students, asof_date, stu_lag), cfg)
+  oad_clean    <- clean_oad(reenrich_oad(restrict_to_asof(vintages$oad, asof_date, oad_lag)), cfg)
+  nom_clean    <- clean_nom(reenrich_nom(restrict_to_asof(vintages$nom, asof_date, nom_lag)), cfg)
+  vg_clean     <- clean_visa_grants(reenrich_visa_grants(restrict_to_asof(vintages$visa_grants, asof_date, vg_lag)), cfg)
+  stu_clean    <- clean_students(reenrich_students(restrict_to_asof(vintages$students, asof_date, stu_lag)), cfg)
 
   panel <- build_quarterly_panel(oad_clean, nom_clean, vg_clean, stu_clean, cfg)
   if (nrow(panel) < 8L) {
@@ -122,10 +122,11 @@ empty_backtest_run <- function() {
 
 #' @keywords internal
 horizons_at <- function(ref_q, horizons) {
-  tibble::tibble(
-    period  = ref_q + lubridate::quarters(horizons),
-    horizon = horizons
-  )
+  periods <- vapply(horizons, function(h) {
+    seq.Date(ref_q, by = sprintf("%d months", 3L * h), length.out = 2L)[2L]
+  }, FUN.VALUE = as.Date(NA))
+  tibble::tibble(period = as.Date(periods, origin = "1970-01-01"),
+                 horizon = horizons)
 }
 
 #' @keywords internal

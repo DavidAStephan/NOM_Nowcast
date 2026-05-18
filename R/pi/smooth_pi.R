@@ -39,45 +39,72 @@ assign_regime <- function(period, breaks) {
 #' Smooth a single (category, regime) slice.
 #' @keywords internal
 smooth_pi_one <- function(df, smoother, cfg) {
-  if (nrow(df) < 3L || smoother == "none") {
+  ok <- !is.na(df$pi_hat) & is.finite(df$pi_hat)
+  df_ok <- df[ok, , drop = FALSE]
+  sd_fallback <- function(v) {
+    s <- stats::sd(v, na.rm = TRUE)
+    if (is.na(s) || !is.finite(s)) 0 else s
+  }
+  if (nrow(df_ok) < 5L || smoother == "none") {
     return(tibble::tibble(
       period = df$period, pi_smoothed = df$pi_hat,
-      pi_se = stats::sd(df$pi_hat, na.rm = TRUE) %||% 0
+      pi_se = sd_fallback(df$pi_hat)
     ))
   }
-  x <- as.numeric(df$period)
-  y <- df$pi_hat
+  x_full <- as.numeric(df$period)
+  x  <- as.numeric(df_ok$period)
+  y  <- df_ok$pi_hat
 
   switch(smoother,
     loess = {
       span <- cfg$pi$loess_span %||% 0.3
       fit <- tryCatch(
-        stats::loess(y ~ x, span = span, na.action = stats::na.exclude),
+        stats::loess(y ~ x, span = span),
         error = function(e) NULL
       )
-      if (is.null(fit)) {
-        return(tibble::tibble(period = df$period, pi_smoothed = y,
-                              pi_se = stats::sd(y, na.rm = TRUE)))
+      pred <- if (!is.null(fit)) {
+        tryCatch(stats::predict(fit, newdata = data.frame(x = x_full),
+                                se = TRUE),
+                 error = function(e) NULL)
+      } else NULL
+      if (is.null(pred)) {
+        return(tibble::tibble(period = df$period, pi_smoothed = df$pi_hat,
+                              pi_se = sd_fallback(y)))
       }
-      pred <- stats::predict(fit, se = TRUE)
       tibble::tibble(period = df$period,
                      pi_smoothed = as.numeric(pred$fit),
                      pi_se       = as.numeric(pred$se.fit))
     },
     hp = {
       lambda <- cfg$pi$hp_lambda %||% 1600
-      sm <- hp_filter(y, lambda)
+      y_full <- df$pi_hat
+      y_imp  <- impute_for_filter(y_full)
+      sm <- hp_filter(y_imp, lambda)
+      sm[is.na(y_full)] <- NA_real_
       tibble::tibble(period = df$period, pi_smoothed = sm,
-                     pi_se = stats::sd(y - sm, na.rm = TRUE))
+                     pi_se = sd_fallback(y_full - sm))
     },
     locallinear = {
-      sm <- local_linear_filter(y)
+      y_full <- df$pi_hat
+      sm <- local_linear_filter(impute_for_filter(y_full))
       tibble::tibble(period = df$period, pi_smoothed = sm$mean,
                      pi_se = sm$se)
     },
-    tibble::tibble(period = df$period, pi_smoothed = y,
-                   pi_se = stats::sd(y, na.rm = TRUE))
+    tibble::tibble(period = df$period, pi_smoothed = df$pi_hat,
+                   pi_se = sd_fallback(df$pi_hat))
   )
+}
+
+#' Simple linear interpolation for filter inputs. Returns the same
+#' vector with internal NAs filled by the mean of the non-NA values,
+#' edge NAs filled by the nearest non-NA.
+#' @keywords internal
+impute_for_filter <- function(y) {
+  ok <- !is.na(y) & is.finite(y)
+  if (!any(ok)) return(rep(0, length(y)))
+  fill <- mean(y[ok])
+  y[!ok] <- fill
+  y
 }
 
 #' Standard Hodrick-Prescott two-sided filter.
@@ -94,8 +121,9 @@ hp_filter <- function(y, lambda = 1600) {
 #' Simple local-linear (random-walk plus drift) filter using KFAS.
 #' @keywords internal
 local_linear_filter <- function(y) {
-  ssm <- KFAS::SSModel(y ~ KFAS::SSMtrend(degree = 2, Q = list(NA, NA)),
-                       H = NA)
+  SSModel  <- KFAS::SSModel
+  SSMtrend <- KFAS::SSMtrend
+  ssm <- SSModel(y ~ SSMtrend(degree = 2, Q = list(NA, NA)), H = NA)
   fit <- tryCatch(KFAS::fitSSM(ssm, inits = c(0, 0, 0), method = "BFGS"),
                   error = function(e) NULL)
   if (is.null(fit)) return(list(mean = y, se = rep(stats::sd(y, na.rm = TRUE), length(y))))

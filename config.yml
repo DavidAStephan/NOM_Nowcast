@@ -21,16 +21,24 @@ default:
   # catalogue + table label first, and fall back to these IDs if the lookup
   # fails. Update here when ABS reissues a table.
   abs:
-    oad_cat: "3401.0"
-    oad_tables:
-      arrivals_departures_total: "01"
-      arrivals_by_visa: "11"          # short-term + long-term by visa group
-      arrivals_by_country: "06"
-      departures_by_country: "08"
-    nom_cat: "3101.0"
-    nom_tables:
-      nom_quarterly: "9"
-      nom_by_visa: "9.1"
+    # Modern ABS catalogues use slug-based identifiers, not legacy
+    # cat-numbers, and most population releases are now Excel data
+    # cubes rather than time-series spreadsheets. Update slugs here if
+    # the ABS re-namespaces a release.
+    oad_slug: "overseas-arrivals-and-departures-australia"
+    # Data-cube files used by the OAD fetcher:
+    #   3401015.xlsx — Total arrivals by state and visa group
+    #   3401016.xlsx — Total departures by state and visa group
+    # Sheet "Table 15.9" / "Table 16.9" = Australia-wide.
+    pop_slug: "national-state-and-territory-population"
+    # Data-cube file used by the (quarterly) NOM fetcher:
+    #   310101.xlsx — Population and components of change, national
+    # NOM enters as the "Net overseas migration" component series.
+    nom_slug_quarterly: "national-state-and-territory-population"
+    nom_quarterly_file: "310101.xlsx"
+    # Annual NOM-by-visa-group (used by pi estimation):
+    nom_slug_annual: "overseas-migration"
+    nom_annual_visa_file: "34070DO004_202425.xlsx"
     publication_lag_days:
       oad: 35      # OAD released ~5 weeks after reference month
       nom: 183     # NOM released ~6 months after reference quarter

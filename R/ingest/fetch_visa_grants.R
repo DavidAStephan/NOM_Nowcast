@@ -155,7 +155,7 @@ parse_dha_period <- function(x) {
 #' @keywords internal
 map_subclass_to_category <- function(subclass) {
   m <- nn_category_map()$visa_subclass
-  vapply(subclass, function(s) {
+  out <- vapply(subclass, function(s) {
     if (is.na(s)) return(NA_character_)
     matches <- vapply(names(m), function(cat) {
       any(stringr::str_detect(s, m[[cat]]))
@@ -163,6 +163,7 @@ map_subclass_to_category <- function(subclass) {
     hits <- names(m)[matches]
     if (length(hits)) hits[[1]] else "other"
   }, character(1))
+  unname(out)
 }
 
 #' Light alternative to {janitor}::clean_names() that we keep inline to

@@ -20,18 +20,19 @@ build_nowcast_categories <- function(kalman_forecasts, pi_smoothed, cfg) {
   if (nrow(kalman_forecasts) == 0L) {
     return(empty_nowcast())
   }
-  # Use latest available smoothed π for each (period, category); carry
-  # forward where the projection has it NA.
-  pi_panel <- pi_smoothed |>
-    dplyr::group_by(.data$category) |>
+  # Latest available smoothed π per category — used as fallback for
+  # quarters not represented in pi_smoothed (e.g. recent periods past
+  # the completion cutoff).
+  pi_last <- pi_smoothed |>
     dplyr::arrange(.data$period) |>
-    dplyr::mutate(
-      pi_latest = dplyr::last(.data$pi_smoothed),
-      se_latest = dplyr::last(.data$pi_se)
-    ) |>
-    dplyr::ungroup() |>
-    dplyr::select("period", "category", "pi_smoothed", "pi_se",
-                  "pi_latest", "se_latest")
+    dplyr::group_by(.data$category) |>
+    dplyr::summarise(
+      pi_latest = dplyr::last(stats::na.omit(.data$pi_smoothed)),
+      se_latest = dplyr::last(stats::na.omit(.data$pi_se)),
+      .groups   = "drop"
+    )
+  pi_period <- pi_smoothed |>
+    dplyr::select("period", "category", "pi_smoothed", "pi_se")
 
   fc_wide <- kalman_forecasts |>
     tidyr::pivot_wider(
@@ -43,20 +44,29 @@ build_nowcast_categories <- function(kalman_forecasts, pi_smoothed, cfg) {
               "se_log_arrival", "se_log_departure")
   for (n in needed) if (!n %in% names(fc_wide)) fc_wide[[n]] <- NA_real_
 
+  finite_or_na <- function(x) {
+    x[!is.finite(x)] <- NA_real_
+    x
+  }
   joined <- fc_wide |>
-    dplyr::left_join(pi_panel, by = c("period", "category")) |>
+    dplyr::left_join(pi_period, by = c("period", "category")) |>
+    dplyr::left_join(pi_last,   by = "category") |>
     dplyr::mutate(
+      mean_level_arrival   = finite_or_na(.data$mean_level_arrival),
+      mean_level_departure = finite_or_na(.data$mean_level_departure),
+      se_log_arrival       = finite_or_na(.data$se_log_arrival),
+      se_log_departure     = finite_or_na(.data$se_log_departure),
       pi_use     = dplyr::coalesce(.data$pi_smoothed, .data$pi_latest),
-      pi_se_use  = dplyr::coalesce(.data$pi_se, .data$se_latest),
-      nom_mean   = .data$pi_use * .data$mean_level_arrival -
-                   .data$pi_use * .data$mean_level_departure,
-      # Delta method first-order variance, ignoring covariance(A, D)
+      pi_se_use  = finite_or_na(dplyr::coalesce(.data$pi_se, .data$se_latest)),
+      nom_mean   = .data$pi_use *
+                   (.data$mean_level_arrival - .data$mean_level_departure),
       var_term   = (.data$pi_use^2) *
                      ((.data$mean_level_arrival * .data$se_log_arrival)^2 +
                       (.data$mean_level_departure * .data$se_log_departure)^2) +
                    (.data$pi_se_use^2) *
                      (.data$mean_level_arrival - .data$mean_level_departure)^2,
-      nom_se     = sqrt(pmax(.data$var_term, 0))
+      var_term   = finite_or_na(.data$var_term),
+      nom_se     = sqrt(pmax(.data$var_term, 0, na.rm = TRUE))
     )
 
   ci80 <- cfg$reporting$headline_ci %||% 0.80

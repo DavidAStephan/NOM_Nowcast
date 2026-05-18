@@ -23,7 +23,9 @@ test_that("estimate_pi_empirical respects completion_quarters cutoff", {
   cfg <- list(pi = list(completion_quarters = 6L,
                         floor = 0, ceiling = 1.5))
   pi_emp <- estimate_pi_empirical(panel, cfg)
-  expect_true(max(pi_emp$period) <= max(panel$period) - lubridate::quarters(6))
+  expected_cutoff <- seq.Date(max(panel$period), by = "-18 months",
+                              length.out = 2L)[2L]
+  expect_true(max(pi_emp$period) <= expected_cutoff)
   expect_true(all(pi_emp$pi_hat >= 0 & pi_emp$pi_hat <= 1.5))
 })
 

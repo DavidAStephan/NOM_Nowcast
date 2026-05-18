@@ -31,10 +31,13 @@ estimate_pi_empirical <- function(panel, cfg) {
   cq <- cfg$pi$completion_quarters %||% 6L
   floor_v   <- cfg$pi$floor   %||% 0
   ceiling_v <- cfg$pi$ceiling %||% 1.5
-  cutoff <- max(panel$period, na.rm = TRUE) - lubridate::quarters(cq)
+  cutoff <- seq.Date(max(panel$period, na.rm = TRUE),
+                     by = sprintf("-%d months", 3L * cq),
+                     length.out = 2L)[2L]
 
-  panel |>
+  by_cat <- panel |>
     dplyr::filter(.data$period <= cutoff,
+                  .data$category != "total",
                   !is.na(.data$oad_lt_arrivals),
                   !is.na(.data$nom_final),
                   .data$oad_lt_arrivals > 0) |>
@@ -45,4 +48,39 @@ estimate_pi_empirical <- function(panel, cfg) {
       pi_hat     = pmin(pmax(.data$nom_final / .data$oad_lt_arrivals,
                              floor_v), ceiling_v)
     )
+  if (nrow(by_cat) > 0L) return(by_cat)
+
+  # Aggregate-pi fallback: ABS quarterly NOM is published as a total
+  # only (no category breakdown). Compute the total classification
+  # ratio for each completed quarter and emit one row per category by
+  # broadcasting the total — this lets the modelling pipeline downstream
+  # treat every category uniformly while keeping the estimator stable.
+  totals <- panel |>
+    dplyr::filter(.data$category == "total", !is.na(.data$nom_final)) |>
+    dplyr::select("period", nom_total = "nom_final") |>
+    dplyr::filter(.data$period <= cutoff)
+  net_by_q <- panel |>
+    dplyr::filter(.data$category != "total") |>
+    dplyr::group_by(.data$period) |>
+    dplyr::summarise(
+      total_net      = sum(.data$oad_lt_net,      na.rm = TRUE),
+      total_arrivals = sum(.data$oad_lt_arrivals, na.rm = TRUE),
+      .groups = "drop"
+    )
+  agg <- totals |>
+    dplyr::inner_join(net_by_q, by = "period") |>
+    dplyr::filter(abs(.data$total_net) > 0) |>
+    dplyr::transmute(
+      .data$period,
+      # π is defined here as NOM / net long-term flow so that the
+      # downstream `π × (arrivals - departures)` reconstruction
+      # algebraically recovers the headline.
+      pi_hat = pmin(pmax(.data$nom_total / .data$total_net,
+                         floor_v), ceiling_v),
+      nom_final  = .data$nom_total,
+      n_arrivals = .data$total_arrivals
+    )
+  cats <- setdiff(cfg$categories$levels, "total")
+  tidyr::expand_grid(category = cats, agg) |>
+    dplyr::select("period", "category", "n_arrivals", "nom_final", "pi_hat")
 }
