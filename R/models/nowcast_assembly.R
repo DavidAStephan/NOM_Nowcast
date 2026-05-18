@@ -87,9 +87,11 @@ build_nowcast_categories <- function(kalman_forecasts, pi_smoothed, cfg) {
 
 #' Aggregate category-level NOM to a headline series
 #'
-#' Aggregates by summing means and combining variances (assumed
-#' independent across categories — a Phase-1 simplification documented
-#' in the methodology note).
+#' Prefers the dedicated `category == "total"` Kalman fit (which is
+#' driven by the ABS Permanent+Long-term aggregate) when it is
+#' available, because the aggregate series has lower noise than the
+#' sum of category-level fits. Falls back to summing across the
+#' canonical visa categories otherwise.
 #'
 #' @param nowcast_categories Output of [build_nowcast_categories()].
 #' @param cfg Project config.
@@ -98,33 +100,46 @@ build_nowcast_categories <- function(kalman_forecasts, pi_smoothed, cfg) {
 #' @export
 build_nowcast_headline <- function(nowcast_categories, cfg) {
   if (nrow(nowcast_categories) == 0L) {
-    return(tibble::tibble(
-      period = as.Date(character()), nom_mean = numeric(),
-      nom_se = numeric(),
-      lower_80 = numeric(), upper_80 = numeric(),
-      lower_95 = numeric(), upper_95 = numeric()
-    ))
+    return(empty_headline())
   }
   ci80 <- cfg$reporting$headline_ci %||% 0.80
   ci95 <- cfg$reporting$secondary_ci %||% 0.95
   z80 <- stats::qnorm(0.5 + ci80 / 2)
   z95 <- stats::qnorm(0.5 + ci95 / 2)
 
-  nowcast_categories |>
-    dplyr::group_by(.data$period) |>
-    dplyr::summarise(
-      nom_mean = sum(.data$nom_mean, na.rm = TRUE),
-      nom_var  = sum(.data$nom_se^2, na.rm = TRUE),
-      .groups = "drop"
-    ) |>
+  total_rows <- nowcast_categories |>
+    dplyr::filter(.data$category == "total", !is.na(.data$nom_mean))
+  base <- if (nrow(total_rows) > 0L) {
+    total_rows |>
+      dplyr::transmute(.data$period, .data$nom_mean, .data$nom_se)
+  } else {
+    nowcast_categories |>
+      dplyr::filter(.data$category != "total") |>
+      dplyr::group_by(.data$period) |>
+      dplyr::summarise(
+        nom_mean = sum(.data$nom_mean, na.rm = TRUE),
+        nom_se   = sqrt(sum(.data$nom_se^2, na.rm = TRUE)),
+        .groups  = "drop"
+      )
+  }
+
+  base |>
     dplyr::mutate(
-      nom_se   = sqrt(.data$nom_var),
       lower_80 = .data$nom_mean - z80 * .data$nom_se,
       upper_80 = .data$nom_mean + z80 * .data$nom_se,
       lower_95 = .data$nom_mean - z95 * .data$nom_se,
       upper_95 = .data$nom_mean + z95 * .data$nom_se
-    ) |>
-    dplyr::select(-"nom_var")
+    )
+}
+
+#' @keywords internal
+empty_headline <- function() {
+  tibble::tibble(
+    period = as.Date(character()), nom_mean = numeric(),
+    nom_se = numeric(),
+    lower_80 = numeric(), upper_80 = numeric(),
+    lower_95 = numeric(), upper_95 = numeric()
+  )
 }
 
 #' @keywords internal

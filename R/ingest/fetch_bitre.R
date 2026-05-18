@@ -35,19 +35,31 @@ empty_bitre <- function() {
 
 #' @keywords internal
 fetch_bitre_scrape <- function(index_url, cfg, asof) {
-  page <- nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html()
+  page <- tryCatch(
+    nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html(),
+    error = function(e) {
+      nn_warn("BITRE fetch: HTTP error on {index_url}: {conditionMessage(e)}")
+      NULL
+    }
+  )
+  if (is.null(page)) return(empty_bitre())
   links <- page |>
     rvest::html_elements("a") |>
     rvest::html_attr("href") |>
     Filter(f = function(x) !is.na(x) &&
-             stringr::str_detect(x, "(?i)international.*airline.*\\.xlsx$"))
+             stringr::str_detect(x, "(?i)international.*airline.*\\.xlsx$|airline.*activity.*\\.xlsx$"))
   if (!length(links)) {
-    cli::cli_abort("Could not locate BITRE international airline XLSX on {index_url}")
+    nn_warn("BITRE: no airline activity XLSX found on {index_url}")
+    return(empty_bitre())
   }
   links <- ifelse(stringr::str_detect(links, "^https?://"),
                   links,
                   paste0("https://www.bitre.gov.au", links))
-  file <- nn_download(unique(links)[[1]], "bitre", cfg, asof, ext = ".xlsx")
+  file <- tryCatch(
+    nn_download(unique(links)[[1]], "bitre", cfg, asof, ext = ".xlsx"),
+    error = function(e) NULL
+  )
+  if (is.null(file)) return(empty_bitre())
   parse_bitre_workbook(file)
 }
 

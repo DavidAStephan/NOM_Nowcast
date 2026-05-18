@@ -39,21 +39,33 @@ empty_students <- function() {
 
 #' @keywords internal
 fetch_student_data_scrape <- function(index_url, cfg, asof) {
-  page <- nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html()
+  page <- tryCatch(
+    nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html(),
+    error = function(e) {
+      nn_warn("Education student fetch: HTTP error on {index_url}: {conditionMessage(e)}")
+      NULL
+    }
+  )
+  if (is.null(page)) return(empty_students())
   links <- page |>
     rvest::html_elements("a") |>
     rvest::html_attr("href") |>
     Filter(f = function(x) !is.na(x) &&
-             stringr::str_detect(x, "(?i)monthly.*summary.*\\.xlsx$"))
+             stringr::str_detect(x, "(?i)monthly.*summary.*\\.xlsx$|international.*student.*\\.xlsx$"))
   if (!length(links)) {
-    cli::cli_abort("Could not locate education monthly summary XLSX on {index_url}")
+    nn_warn("Education student: no monthly XLSX found on {index_url} ",
+            "(Department of Education has moved much of this to Power BI; see README).")
+    return(empty_students())
   }
   links <- ifelse(stringr::str_detect(links, "^https?://"),
                   links,
                   paste0("https://www.education.gov.au", links))
-  # Take the most recently-named link by parsed month
   links <- unique(links)
-  file <- nn_download(links[[1]], "students", cfg, asof, ext = ".xlsx")
+  file <- tryCatch(
+    nn_download(links[[1]], "students", cfg, asof, ext = ".xlsx"),
+    error = function(e) NULL
+  )
+  if (is.null(file)) return(empty_students())
   parse_student_workbook(file)
 }
 

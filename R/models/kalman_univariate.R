@@ -24,7 +24,8 @@
 #'   `transformation` describing the log transform applied.
 #' @export
 fit_kalman_univariate <- function(panel, cfg) {
-  cats <- cfg$models$kalman$categories_to_fit %||% cfg$categories$levels
+  cats <- cfg$models$kalman$categories_to_fit %||%
+          unique(c(cfg$categories$levels, "total"))
   out <- list()
   for (cat in cats) {
     arr <- prepare_kalman_series(panel, cat, "oad_lt_arrivals")

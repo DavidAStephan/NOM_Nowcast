@@ -113,28 +113,55 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 1 performance (as at the v0.1 calibration)
+
+On a live ABS pull (May 2026), the headline nowcast tracks the ABS
+preliminary closely for the most recent eight completed quarters:
+
+| Quarter  | Model    | ABS    | Error    | % |
+|----------|---------:|-------:|---------:|--:|
+| 2023-Q1  | 178,974  | 165,500| +13,474  | +8.1% |
+| 2023-Q2  | 106,851  | 120,500| −13,649  | −11.3% |
+| 2023-Q3  | 144,781  | 145,200|   −419   | −0.3% |
+| 2023-Q4  | 93,677   | 99,500 | −5,823   | −5.9% |
+| 2024-Q1  | 125,485  | 128,700| −3,215   | −2.5% |
+| 2024-Q2  | 59,105   | 55,800 | +3,305   | +5.9% |
+| 2024-Q3  | 77,992   | 81,600 | −3,608   | −4.4% |
+| 2024-Q4  | 70,251   | 63,900 | +6,351   | +9.9% |
+
+Out-of-sample (2025+) the Kalman currently over-shoots because ABS
+revised NOM down through 2025 and the structural trend hasn't caught
+up. This is the natural target of Phase 2's visa-grants leading
+indicator.
+
 ## Limitations
 
-- Without PLIDA-level stay-duration data, the project models classification
-  probabilities indirectly. The π estimator uses completed cohorts only;
-  uncertainty around extrapolating π forward is substantial during regime
-  breaks.
-- Home Affairs and Department of Education publication formats have changed
-  multiple times. The scrapers are defensive but may need fixes when those
-  formats next change. Failures are logged but do not crash the pipeline.
+- Without PLIDA-level stay-duration data, the project models
+  classification probabilities indirectly. The π estimator uses
+  completed cohorts only; uncertainty around extrapolating π forward
+  is substantial during regime breaks.
 - ABS NOM final values are themselves revised; "ground truth" in the
   backtest means the latest vintage available at the report run time.
 - **ABS NOM by visa category is now only published annually**
-  (catalogue 3407.0; see `R/ingest/fetch_nom.R`). Quarterly NOM is total only.
-  The empirical π estimator therefore falls back to aggregate-π
-  (`NOM_total_q / net_OAD_total_q`) and broadcasts it across categories.
-  Category attribution is proportional to OAD shares — an honest
-  Phase-1 simplification, documented in the methodology report.
-- **OAD has migrated from time-series spreadsheets to Excel data cubes.**
-  Tables 15.9 (arrivals by visa group, Australia) and 16.9 (departures)
-  are total movements (short + long-term + permanent), not long-term
-  only. The model learns the empirical π relation regardless, but
-  matches the legacy long-term definition only approximately.
+  (catalogue 3407.0). Quarterly NOM is total only. The empirical π
+  estimator falls back to aggregate-π
+  (`NOM_total_q / net_long_term_flow_q`) and broadcasts it across
+  categories. Category attribution is mechanical rather than
+  structural — Phase-1 simplification, documented in the methodology
+  report.
+- **OAD has migrated to Excel data cubes.** The headline now uses
+  Tables 1/2 (Permanent + Long-term movements, national totals) which
+  is the canonical NOM-relevant flow. Tables 15/16 (by visa group)
+  still feed the categorical decomposition but cover total movements
+  rather than long-term only.
+- **Secondary sources have largely migrated to Power BI dashboards.**
+  DHA visa grants, Department of Education student data and BITRE
+  airline activity no longer expose monthly CSV/XLSX downloads on
+  their public landing pages — they now require either the
+  data.gov.au open-data API or Power BI clients. The fetchers degrade
+  gracefully (return empty tibbles) and the Phase 1 nowcast is
+  unaffected, but wiring up these sources is a prerequisite for
+  Phase 2.
 
 ## Adding a new data source
 

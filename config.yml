@@ -43,18 +43,26 @@ default:
       oad: 35      # OAD released ~5 weeks after reference month
       nom: 183     # NOM released ~6 months after reference quarter
 
+  # Secondary sources. As of 2026-05, DHA, Department of Education, and
+  # BITRE have all migrated away from static CSV/XLSX downloads toward
+  # interactive Power BI dashboards and PDF-only releases. The URLs
+  # below point at the current landing pages and the fetchers degrade
+  # gracefully when no downloadable files are found. For Phase 2 these
+  # sources should be re-wired against the data.gov.au open-data API
+  # (or equivalent) — see README "Limitations".
   homeaffairs:
-    visa_grants_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/visa-grants"
-    twh_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/live/temporary-visa-holders"
-    wh_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/work/working-holiday-maker"
+    visa_grants_index: "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics"
+    twh_index:         "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/live/temporary-entrants-in-australia"
+    wh_index:          "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/work"
+    sub_page_keywords: ["visit", "study", "live", "work", "migration-program"]
     publication_lag_days: 45
 
   education:
-    students_index: "https://www.education.gov.au/international-education-data-and-research/international-student-data"
+    students_index: "https://www.education.gov.au/international-education-data-and-research"
     publication_lag_days: 35
 
   bitre:
-    airline_activity_index: "https://www.bitre.gov.au/statistics/aviation/international_airline_activity_monthly"
+    airline_activity_index: "https://www.bitre.gov.au/statistics/aviation"
     publication_lag_days: 60
 
   # ----- Categories -----

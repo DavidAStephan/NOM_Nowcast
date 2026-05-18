@@ -41,8 +41,23 @@ fetch_oad <- function(cfg, asof) {
   out
 }
 
-#' Download OAD Tables 15 (arrivals by visa) and 16 (departures by visa)
-#' and parse the Australia-wide sheets.
+#' Download OAD data cubes and parse them into long form
+#'
+#' Two streams come out of this fetcher:
+#'
+#'   * **Aggregate long-term** — Tables 1 and 2 of cat. 3401.0
+#'     (`340101.xlsx`, `340102.xlsx`) follow the standard ABS time
+#'     series layout and contain Permanent, Long-term and Short-term
+#'     arrivals/departures. We pull Permanent+Long-term as the
+#'     canonical NOM-relevant flow.
+#'
+#'   * **By visa group** — Tables 15.9 and 16.9 (`3401015.xlsx`,
+#'     `3401016.xlsx`) give arrivals/departures by visa group for
+#'     Australia, but cover *total* movements (short + long + permanent
+#'     combined). Used for category-level diagnostics and Phase 2.
+#'
+#' Both streams are returned in a single tibble; `category == "total"`
+#' marks the aggregate long-term rows.
 #'
 #' @param cfg Project config.
 #' @param asof As-of date for cache pathing.
@@ -51,14 +66,14 @@ fetch_oad_data_cubes <- function(cfg, asof) {
   slug <- cfg$abs$oad_slug %||% "overseas-arrivals-and-departures-australia"
   out_dir <- fs::path(cfg$paths$raw, "oad", format(asof, "%Y-%m-%d"))
   fs::dir_create(out_dir)
-  table_specs <- list(
-    list(file = "3401015.xlsx", direction = "arrival",
-         sheet = "Table 15.9"),
-    list(file = "3401016.xlsx", direction = "departure",
-         sheet = "Table 16.9")
-  )
 
-  purrr::map_dfr(table_specs, function(spec) {
+  aggregate <- fetch_oad_aggregate_long_term(slug, out_dir)
+
+  by_visa_specs <- list(
+    list(file = "3401015.xlsx", direction = "arrival",   sheet = "Table 15.9"),
+    list(file = "3401016.xlsx", direction = "departure", sheet = "Table 16.9")
+  )
+  by_visa <- purrr::map_dfr(by_visa_specs, function(spec) {
     nn_info("OAD: downloading {spec$file}")
     path <- tryCatch(
       readabs::download_abs_data_cube(
@@ -74,6 +89,79 @@ fetch_oad_data_cubes <- function(cfg, asof) {
     }
     parse_oad_cube(path, spec$sheet, spec$direction)
   })
+
+  dplyr::bind_rows(aggregate, by_visa)
+}
+
+#' Download Tables 1/2 and extract the canonical
+#' "Permanent and Long-term" national flow series.
+#'
+#' These series are stored in the standard ABS time-series spreadsheet
+#' layout (sheet "Data1": metadata in rows 1-10, monthly observations
+#' from row 11). We hard-code the series IDs because they are stable
+#' identifiers; if ABS reissues a table with new IDs the fallback
+#' filters by series description.
+#'
+#' @keywords internal
+fetch_oad_aggregate_long_term <- function(slug, out_dir) {
+  table_specs <- list(
+    list(file = "340101.xlsx", direction = "arrival",
+         sid = "A85232568L",
+         label_pat = "(?i)Permanent and Long.?term Arrivals"),
+    list(file = "340102.xlsx", direction = "departure",
+         sid = "A85232558J",
+         label_pat = "(?i)Permanent and Long.?term Departures")
+  )
+  purrr::map_dfr(table_specs, function(spec) {
+    nn_info("OAD: downloading {spec$file} (aggregate long-term)")
+    path <- tryCatch(
+      readabs::download_abs_data_cube(
+        catalogue_string = slug,
+        cube             = spec$file,
+        path             = out_dir
+      ),
+      error = function(e) NULL
+    )
+    if (is.null(path) || !file.exists(path)) {
+      nn_warn("OAD: failed to download {spec$file}")
+      return(empty_oad())
+    }
+    parse_oad_aggregate_sheet(path, "Data1", spec)
+  })
+}
+
+#' @keywords internal
+parse_oad_aggregate_sheet <- function(path, sheet, spec) {
+  raw <- readxl::read_excel(path, sheet = sheet, col_names = FALSE,
+                            .name_repair = "minimal")
+  if (nrow(raw) < 11L) return(empty_oad())
+  labels <- as.character(unlist(raw[1L,  ]))
+  ids    <- as.character(unlist(raw[10L, ]))
+  # Prefer match by series ID; fall back to label regex.
+  col <- which(ids == spec$sid)
+  if (!length(col)) col <- which(grepl(spec$label_pat, labels))
+  if (!length(col)) {
+    nn_warn("OAD aggregate: could not find series {spec$sid} ({spec$label_pat}) in {basename(path)}")
+    return(empty_oad())
+  }
+  col <- col[1L]
+  period_serial <- suppressWarnings(as.numeric(unlist(raw[11:nrow(raw), 1L])))
+  period <- as.Date(period_serial, origin = "1899-12-30")
+  vals <- suppressWarnings(as.numeric(unlist(raw[11:nrow(raw), col])))
+  tibble::tibble(
+    series_id   = paste0("oad_lt:", spec$direction, ":total"),
+    period      = lubridate::floor_date(period, "month"),
+    period_unit = "month",
+    value       = vals,
+    category    = "total",
+    direction   = spec$direction,
+    unit        = "persons",
+    metadata    = as.character(jsonlite::toJSON(
+      list(file = basename(path), sheet = sheet,
+           abs_series_id = ids[col], series = labels[col]),
+      auto_unbox = TRUE))
+  ) |>
+    dplyr::filter(!is.na(.data$period), !is.na(.data$value))
 }
 
 #' Parse a single OAD data-cube sheet
@@ -125,9 +213,11 @@ parse_oad_cube <- function(path, sheet, direction) {
       direction   = direction,
       series_id   = paste0("oad:", .data$category, ":", direction),
       unit        = "persons",
-      metadata    = jsonlite::toJSON(list(file = basename(path), sheet = sheet,
-                                          visa_group = .data$visa_group),
-                                     auto_unbox = TRUE)
+      metadata    = vapply(.data$visa_group, function(v) {
+        as.character(jsonlite::toJSON(
+          list(file = basename(path), sheet = sheet, visa_group = v),
+          auto_unbox = TRUE))
+      }, character(1))
     ) |>
     dplyr::filter(!is.na(.data$category)) |>
     dplyr::select("series_id", "period", "period_unit", "value",

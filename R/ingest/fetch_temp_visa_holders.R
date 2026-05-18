@@ -39,21 +39,34 @@ empty_twh <- function() {
 fetch_twh_scrape <- function(cfg, asof) {
   index_urls <- c(cfg$homeaffairs$twh_index, cfg$homeaffairs$wh_index)
   all_files <- purrr::flatten_chr(purrr::map(index_urls, function(url) {
-    page <- nn_request(url, cfg) |> httr2::req_perform() |> httr2::resp_body_html()
+    page <- tryCatch(
+      nn_request(url, cfg) |> httr2::req_perform() |> httr2::resp_body_html(),
+      error = function(e) {
+        nn_warn("TWH fetch: HTTP error on {url}: {conditionMessage(e)}")
+        NULL
+      }
+    )
+    if (is.null(page)) return(character())
     links <- page |>
       rvest::html_elements("a") |>
       rvest::html_attr("href") |>
       Filter(f = function(x) !is.na(x) &&
                stringr::str_detect(x, "(?i)\\.(csv|xlsx|xls)$"))
+    if (!length(links)) return(character())
     links <- ifelse(stringr::str_detect(links, "^https?://"),
                     links,
                     paste0("https://www.homeaffairs.gov.au", links))
     vapply(unique(links), function(u) {
       ext <- paste0(".", tools::file_ext(u))
-      nn_download(u, "twh", cfg, asof, ext = ext)
+      tryCatch(nn_download(u, "twh", cfg, asof, ext = ext),
+               error = function(e) NA_character_)
     }, character(1))
   }))
-  if (!length(all_files)) cli::cli_abort("No TWH/WHM files found.")
+  all_files <- all_files[!is.na(all_files)]
+  if (!length(all_files)) {
+    nn_warn("No TWH/WHM files found across configured DHA URLs.")
+    return(empty_twh())
+  }
   purrr::map_dfr(all_files, parse_twh_file)
 }
 

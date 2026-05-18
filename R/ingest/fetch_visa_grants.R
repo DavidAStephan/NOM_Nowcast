@@ -42,24 +42,63 @@ empty_visa_grants <- function() {
 
 #' @keywords internal
 fetch_visa_grants_scrape <- function(index_url, cfg, asof) {
-  page <- nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html()
-  links <- page |>
-    rvest::html_elements("a") |>
-    rvest::html_attr("href") |>
-    Filter(f = function(x) !is.na(x) &&
-             stringr::str_detect(x, "(?i)visa.*grants?.*\\.(xlsx|csv|xls)$"))
-  if (!length(links)) {
-    cli::cli_abort("Could not locate any visa grant download link on {index_url}")
+  page <- tryCatch(
+    nn_request(index_url, cfg) |> httr2::req_perform() |> httr2::resp_body_html(),
+    error = function(e) {
+      nn_warn("DHA visa grants: HTTP error on {index_url}: {conditionMessage(e)}")
+      NULL
+    }
+  )
+  if (is.null(page)) return(empty_visa_grants())
+
+  # Crawl both the index page and any documented sub-pages (visit /
+  # study / live / work etc.) for visa-grant CSV/XLSX links.
+  candidate_pages <- character()
+  candidate_pages <- c(candidate_pages, index_url)
+  sub_keys <- cfg$homeaffairs$sub_page_keywords %||% character()
+  if (length(sub_keys)) {
+    sub_links <- page |>
+      rvest::html_elements("a") |>
+      rvest::html_attr("href")
+    sub_links <- sub_links[!is.na(sub_links)]
+    keep <- vapply(sub_links, function(u) {
+      any(stringr::str_detect(u, paste0("(?i)", sub_keys, "(/|$)")))
+    }, logical(1))
+    sub_links <- unique(sub_links[keep])
+    sub_links <- ifelse(stringr::str_detect(sub_links, "^https?://"),
+                        sub_links,
+                        paste0("https://www.homeaffairs.gov.au", sub_links))
+    candidate_pages <- unique(c(candidate_pages, sub_links))
   }
-  # Absolute-ise relative URLs
+
+  links <- purrr::flatten_chr(purrr::map(candidate_pages, function(p) {
+    sub_page <- tryCatch(
+      nn_request(p, cfg) |> httr2::req_perform() |> httr2::resp_body_html(),
+      error = function(e) NULL
+    )
+    if (is.null(sub_page)) return(character())
+    sub_page |>
+      rvest::html_elements("a") |>
+      rvest::html_attr("href") |>
+      Filter(f = function(x) !is.na(x) &&
+               stringr::str_detect(x, "(?i)\\.(xlsx|csv|xls)$"))
+  }))
+  links <- unique(links)
+  if (!length(links)) {
+    nn_warn("DHA visa grants: no XLSX/CSV downloads found across {length(candidate_pages)} candidate pages. ",
+            "(DHA has migrated to Power BI dashboards; see README.)")
+    return(empty_visa_grants())
+  }
   links <- ifelse(stringr::str_detect(links, "^https?://"),
                   links,
                   paste0("https://www.homeaffairs.gov.au", links))
   files <- vapply(unique(links), function(u) {
     ext <- paste0(".", tools::file_ext(u))
-    nn_download(u, "visa_grants", cfg, asof, ext = ext)
+    tryCatch(nn_download(u, "visa_grants", cfg, asof, ext = ext),
+             error = function(e) NA_character_)
   }, character(1))
-
+  files <- files[!is.na(files)]
+  if (!length(files)) return(empty_visa_grants())
   purrr::map_dfr(files, parse_visa_grants_file)
 }
 

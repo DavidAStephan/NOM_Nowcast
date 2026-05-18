@@ -71,9 +71,14 @@ smooth_pi_one <- function(df, smoother, cfg) {
         return(tibble::tibble(period = df$period, pi_smoothed = df$pi_hat,
                               pi_se = sd_fallback(y)))
       }
-      tibble::tibble(period = df$period,
-                     pi_smoothed = as.numeric(pred$fit),
-                     pi_se       = as.numeric(pred$se.fit))
+      sm <- as.numeric(pred$fit)
+      # LOESS at edges or with sparse data sometimes returns 0 or NA
+      # even when the input wasn't 0; back-stop with the raw value.
+      bad <- !is.finite(sm) | (sm == 0 & df$pi_hat != 0 & !is.na(df$pi_hat))
+      sm[bad] <- df$pi_hat[bad]
+      se <- as.numeric(pred$se.fit)
+      se[!is.finite(se)] <- sd_fallback(y)
+      tibble::tibble(period = df$period, pi_smoothed = sm, pi_se = se)
     },
     hp = {
       lambda <- cfg$pi$hp_lambda %||% 1600
