@@ -17,7 +17,11 @@ tar_option_set(
     "dplyr", "tidyr", "tibble", "purrr", "stringr", "lubridate",
     "tsibble", "readr", "fs", "glue", "cli", "rlang", "yaml"
   ),
-  format = "qs",
+  # Built-in `rds` format avoids the external qs / qs2 package
+  # dependency (which was patchily available from RSPM Linux builds
+  # in CI). Our cached artefacts are small panels and fit objects,
+  # so qs's speed advantage is irrelevant.
+  format = "rds",
   memory = "transient",
   garbage_collection = TRUE,
   error = "continue",

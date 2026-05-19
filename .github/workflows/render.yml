@@ -106,11 +106,7 @@ jobs:
             "ggplot2", "glue", "gt", "httr2", "jsonlite", "KFAS",
             "lubridate", "purrr", "quarto", "readabs", "readr", "readxl",
             "rvest", "scales", "stringr", "tarchetypes", "targets",
-            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass",
-            # qs / qs2 are targets's default storage backends. Without
-            # them tar_make() errors with "could not load dependency"
-            # for every target.
-            "qs", "qs2"
+            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass"
           )
           missing <- pkgs[!vapply(pkgs, requireNamespace,
                                   logical(1), quietly = TRUE)]
@@ -134,8 +130,7 @@ jobs:
             "ggplot2", "glue", "gt", "httr2", "jsonlite", "KFAS",
             "lubridate", "purrr", "quarto", "readabs", "readr", "readxl",
             "rvest", "scales", "stringr", "tarchetypes", "targets",
-            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass",
-            "qs", "qs2"
+            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass"
           )
           bad <- character()
           for (p in pkgs) {
