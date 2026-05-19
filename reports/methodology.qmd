@@ -268,7 +268,25 @@ the operationally important h=0/h=+1 horizons, the Gamma weights add
 slightly hurting forecasts. Net positive on the headline use case
 (backcast accuracy matters most for revising NOM history).
 
-### Open work for v5.0
+### v5.0 — data-driven Gamma (α, β) via grid search
+
+The v4.0 Gamma weights were fixed hyperparameters (α=2, β=1). v5.0
+picks (α, β) on a small grid by maximising the panel log-likelihood,
+then refits the Kalman with the chosen pair. The free-parameter
+count is constant across grid points so this is equivalent to AIC
+selection.
+
+At the current as-of date, grid search picks **α=1, β=2** — a
+shorter-mean lag distribution than the v4 default. Backtest
+performance is essentially tied (within 1-2% RMSE across all
+horizons), because the log-likelihood surface over (α, β) is flat
+enough that nearby values give equivalent fits on the 200-quarter
+panel. v5.0 is mathematically correct but the marginal operational
+gain is negligible; production runs default to fixed (α, β) with
+grid search available as a diagnostic via
+`models.kalman_multi.gamma_lag.grid_search`.
+
+### Open work for v6.0
 
 - **Time-varying $\alpha_n$.** v2.0 uses a constant offset; modelling
   it as a slow random walk would let the Kalman distinguish

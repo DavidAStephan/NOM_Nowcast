@@ -73,6 +73,17 @@ fit_kalman_multi <- function(panel, cfg) {
   gl_alpha <- gl_cfg$alpha %||% 2.0
   gl_beta  <- gl_cfg$beta  %||% 1.0
   K_max    <- gl_cfg$k_max %||% 4L
+  # v5.0 — pick (alpha, beta) from data by maximising the panel log-
+  # likelihood over a small grid. Disabled by default; opt in via
+  # `models.kalman_multi.gamma_lag.grid_search: true`.
+  if (use_gamma_lag && isTRUE(gl_cfg$grid_search %||% FALSE)) {
+    best <- grid_search_gamma_lag(panel, cfg)
+    if (!is.null(best)) {
+      gl_alpha <- best$alpha
+      gl_beta  <- best$beta
+      nn_info("kalman_multi: Gamma grid search picked alpha={round(gl_alpha, 2)}, beta={round(gl_beta, 2)} (logLik = {round(best$log_lik, 1)})")
+    }
+  }
   visa_gamma_weights <- if (use_gamma_lag) {
     gamma_lag_weights(gl_alpha, gl_beta, K_max)
   } else NULL
@@ -600,9 +611,9 @@ build_nowcast_headline_from_multi <- function(multi_fc, cfg) {
 
 #' Discretised Gamma lag distribution
 #'
-#' Retained from the v0.5 scaffold as the parametric form the
-#' next-iteration Phase 2 SSM will use; we currently apply a fixed
-#' single-quarter lag instead.
+#' Returns the discrete PMF of `Gamma(alpha, beta)` over integer
+#' support `0:k_max`, normalised so weights sum to 1. Used by the
+#' Phase 2 v4.0 / v5.0 visa-grants observation block.
 #'
 #' @param alpha Shape parameter.
 #' @param beta Rate parameter.
@@ -614,6 +625,52 @@ gamma_lag_weights <- function(alpha, beta, k_max) {
   w <- stats::pgamma(k + 0.5, shape = alpha, rate = beta) -
        stats::pgamma(pmax(k - 0.5, 0), shape = alpha, rate = beta)
   w / sum(w)
+}
+
+#' Grid-search the Gamma lag (alpha, beta) by panel log-likelihood
+#'
+#' For each (alpha, beta) on the configured grid, refits the
+#' multivariate Kalman with those Gamma parameters and records the
+#' marginal log-likelihood of the data. Returns the maximising pair.
+#'
+#' The number of free variance parameters is identical across grid
+#' points, so MLE log-likelihood ordering equals AIC / BIC ordering —
+#' picking max LL is a principled estimator for the Gamma shape /
+#' rate given the rest of the model is fixed.
+#'
+#' To avoid recursion, this function temporarily disables
+#' `gamma_lag.grid_search` in the cfg it passes to each inner fit.
+#'
+#' @param panel Output of [build_quarterly_panel()].
+#' @param cfg Project config.
+#' @return List with `alpha`, `beta`, `log_lik`, plus a `grid` data
+#'   frame of all evaluations (for diagnostic plotting).
+#' @export
+grid_search_gamma_lag <- function(panel, cfg) {
+  gl <- cfg$models$kalman_multi$gamma_lag %||% list()
+  alpha_grid <- gl$alpha_grid %||% c(1.0, 1.5, 2.0, 2.5, 3.0, 4.0)
+  beta_grid  <- gl$beta_grid  %||% c(0.5, 1.0, 1.5, 2.0)
+  grid <- expand.grid(alpha = alpha_grid, beta = beta_grid,
+                      KEEP.OUT.ATTRS = FALSE)
+  grid$log_lik <- NA_real_
+
+  for (i in seq_len(nrow(grid))) {
+    cfg_i <- cfg
+    cfg_i$models$kalman_multi$gamma_lag$alpha       <- grid$alpha[i]
+    cfg_i$models$kalman_multi$gamma_lag$beta        <- grid$beta[i]
+    cfg_i$models$kalman_multi$gamma_lag$grid_search <- FALSE
+    fit_i <- tryCatch(fit_kalman_multi(panel, cfg_i),
+                      error = function(e) NULL)
+    if (is.null(fit_i) || inherits(fit_i, "kalman_multi_failed")) next
+    grid$log_lik[i] <- as.numeric(stats::logLik(fit_i$model))
+  }
+  ok <- which(is.finite(grid$log_lik))
+  if (!length(ok)) return(NULL)
+  best <- ok[which.max(grid$log_lik[ok])]
+  list(alpha = grid$alpha[best],
+       beta  = grid$beta[best],
+       log_lik = grid$log_lik[best],
+       grid = grid)
 }
 
 #' @keywords internal

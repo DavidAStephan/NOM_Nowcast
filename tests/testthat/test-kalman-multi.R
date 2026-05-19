@@ -21,6 +21,58 @@ test_that("gamma_lag_weights peak at the Gamma mode for alpha > 1", {
   expect_equal(which.max(w), 2L)
 })
 
+test_that("gamma_lag_weights with alpha=1 reduces to Exponential(beta)", {
+  # Gamma(1, beta) == Exponential(beta) — strictly decreasing
+  w <- gamma_lag_weights(1, 2, 4)
+  expect_equal(which.max(w), 1L)
+  expect_true(all(diff(w) <= 0))
+})
+
+test_that("grid_search_gamma_lag returns the max-log-likelihood pair", {
+  set.seed(13)
+  periods <- seq.Date(as.Date("2014-01-01"), as.Date("2025-10-01"),
+                      by = "quarter")
+  n_q <- length(periods)
+  arr_log <- 12 + cumsum(rnorm(n_q, 0, 0.05))
+  # Construct V such that V_{t-2} relates to A_t (true peak lag = 2q)
+  vg_log <- log(0.6) +
+    c(rep(NA, 2L), arr_log[seq_len(n_q - 2L)]) +
+    rnorm(n_q, 0, 0.07)
+
+  panel <- tibble::tibble(
+    period      = rep(periods, 2),
+    category    = rep(c("total", "student"), each = n_q),
+    oad_lt_arrivals   = c(expm1(arr_log), rep(NA_real_, n_q)),
+    oad_lt_departures = c(rep(20000, n_q),  rep(NA_real_, n_q)),
+    oad_lt_net        = NA_real_,
+    visa_grants       = c(rep(NA_real_, n_q), expm1(vg_log)),
+    student_commencements = NA_real_,
+    student_enrolments    = NA_real_,
+    nom_preliminary       = NA_real_,
+    nom_revised           = NA_real_,
+    nom_final             = c(round(0.4 * expm1(arr_log)),
+                              rep(NA_real_, n_q))
+  )
+
+  cfg <- list(
+    models = list(kalman_multi = list(enabled = TRUE,
+                                      visa_lead_quarters = 1L,
+                                      include_nom = FALSE,
+                                      gamma_lag = list(
+                                        enabled = TRUE, k_max = 4,
+                                        alpha_grid = c(1, 2, 3),
+                                        beta_grid  = c(0.5, 1, 2))),
+                  kalman = list(damping_phi = 0.85, seasonal_period = 4L)),
+    pi = list(completion_quarters = 6L)
+  )
+  best <- grid_search_gamma_lag(panel, cfg)
+  expect_true(is.finite(best$log_lik))
+  expect_true(best$alpha %in% c(1, 2, 3))
+  expect_true(best$beta  %in% c(0.5, 1, 2))
+  # log_lik at best is at least as large as any other grid point
+  expect_equal(best$log_lik, max(best$grid$log_lik, na.rm = TRUE))
+})
+
 test_that("build_multi_ssmodel augments state with K mu-lag copies when Gamma lag is enabled", {
   set.seed(7)
   n <- 40

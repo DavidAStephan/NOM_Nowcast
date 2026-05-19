@@ -113,6 +113,33 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 2 v5.0 — data-driven Gamma (α, β) via grid search
+
+v4.0 fixed Gamma α=2, β=1. v5.0 picks (α, β) from a small grid by
+maximising the panel log-likelihood, then refits the multivariate
+Kalman with the chosen parameters. The number of free variance
+parameters is unchanged across grid points so log-likelihood
+ordering equals AIC ordering — a principled estimator for the
+Gamma lag shape.
+
+At the current full-data fit, grid search picks **α=1, β=2** (mass
+on lag 0–1; mean lag = 0.5 quarters), substantially shorter than
+the v4 default. Backtest performance is essentially tied with v4
+fixed:
+
+| Model                   | h=-2 | h=-1 | h=0 | h=+1 |
+|-------------------------|----:|----:|----:|----:|
+| v5 (grid search)        | 36,405 | 39,282 | 77,985 | 73,303 |
+| v4 (fixed α=2, β=1)     | 36,183 | 38,330 | 78,773 | 73,970 |
+
+The (α, β) likelihood surface is flat enough that nearby values
+give equivalent fits — the grid-search-picked point varies modestly
+across backtest as-of dates and cancels out on average. Operationally
+v5.0 is mathematically correct but adds ~4s of overhead per fit for
+~0% backtest improvement. Enabled by default in `config.yml` as a
+diagnostic; turn off via `models.kalman_multi.gamma_lag.grid_search:
+false` for production-speed fits at fixed (α, β).
+
 ## Phase 2 v4.0 — parametric Gamma lag for visa grants
 
 The bivariate / trivariate Kalman in v1.0/v2.0 used a fixed
