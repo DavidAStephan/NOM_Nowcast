@@ -51,6 +51,37 @@
 #'   - `kind`             "kalman_multi_v1"
 #' @export
 fit_kalman_multi <- function(panel, cfg) {
+  gl_cfg <- cfg$models$kalman_multi$gamma_lag %||% list(enabled = FALSE)
+  use_gamma_lag <- isTRUE(gl_cfg$enabled %||% FALSE)
+  # v5.0 entry: optionally pick (alpha, beta) from data by max
+  # log-likelihood over a small grid, THEN delegate to the
+  # non-recursive inner fitter. Splitting like this breaks the
+  # otherwise-circular function reference between
+  # `fit_kalman_multi` and `grid_search_gamma_lag` that targets
+  # detects as a cycle in its function-import graph.
+  if (use_gamma_lag && isTRUE(gl_cfg$grid_search %||% FALSE)) {
+    best <- grid_search_gamma_lag(panel, cfg)
+    if (!is.null(best)) {
+      cfg$models$kalman_multi$gamma_lag$alpha <- best$alpha
+      cfg$models$kalman_multi$gamma_lag$beta  <- best$beta
+      nn_info("kalman_multi: Gamma grid search picked alpha={round(best$alpha, 2)}, beta={round(best$beta, 2)} (logLik = {round(best$log_lik, 1)})")
+    }
+  }
+  cfg$models$kalman_multi$gamma_lag$grid_search <- FALSE
+  fit_kalman_multi_one(panel, cfg)
+}
+
+#' Inner, non-recursive multi-source SSM fitter
+#'
+#' Called by both [fit_kalman_multi()] (the public-facing wrapper
+#' that handles v5 grid search) and [grid_search_gamma_lag()] (which
+#' fits at each grid point). Keeping this helper non-recursive
+#' breaks the function-dependency cycle that confuses
+#' `targets::tar_make()`'s DAG validation.
+#'
+#' @inheritParams fit_kalman_multi
+#' @keywords internal
+fit_kalman_multi_one <- function(panel, cfg) {
   total <- panel |>
     dplyr::filter(.data$category == "total") |>
     dplyr::arrange(.data$period)
@@ -64,32 +95,14 @@ fit_kalman_multi <- function(panel, cfg) {
   include_nom <- isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE)
   nom_alpha_tv <- isTRUE(cfg$models$kalman_multi$nom_alpha_time_varying %||% TRUE)
 
-  # Parametric Gamma lag: when `gamma_lag.enabled` is TRUE, visa
-  # grants observation y_2(t) is set to log(V_{t-K}) where K is the
-  # max forward lag, and the Z matrix loads on K+1 lagged copies of
-  # the level state with discretised Gamma(alpha, beta) weights.
   gl_cfg <- cfg$models$kalman_multi$gamma_lag %||% list(enabled = FALSE)
   use_gamma_lag <- isTRUE(gl_cfg$enabled %||% FALSE)
   gl_alpha <- gl_cfg$alpha %||% 2.0
   gl_beta  <- gl_cfg$beta  %||% 1.0
   K_max    <- gl_cfg$k_max %||% 4L
-  # v5.0 — pick (alpha, beta) from data by maximising the panel log-
-  # likelihood over a small grid. Disabled by default; opt in via
-  # `models.kalman_multi.gamma_lag.grid_search: true`.
-  if (use_gamma_lag && isTRUE(gl_cfg$grid_search %||% FALSE)) {
-    best <- grid_search_gamma_lag(panel, cfg)
-    if (!is.null(best)) {
-      gl_alpha <- best$alpha
-      gl_beta  <- best$beta
-      nn_info("kalman_multi: Gamma grid search picked alpha={round(gl_alpha, 2)}, beta={round(gl_beta, 2)} (logLik = {round(best$log_lik, 1)})")
-    }
-  }
   visa_gamma_weights <- if (use_gamma_lag) {
     gamma_lag_weights(gl_alpha, gl_beta, K_max)
   } else NULL
-  # When Gamma lag is active, override the single-quarter lead with
-  # a K-quarter shift so V_{t-K} aligns with the state-augmented
-  # window the Z matrix loads on.
   effective_lead <- if (use_gamma_lag) K_max else lead_q
 
   # Visa-grants signal for the total category: sum across visa
@@ -659,7 +672,9 @@ grid_search_gamma_lag <- function(panel, cfg) {
     cfg_i$models$kalman_multi$gamma_lag$alpha       <- grid$alpha[i]
     cfg_i$models$kalman_multi$gamma_lag$beta        <- grid$beta[i]
     cfg_i$models$kalman_multi$gamma_lag$grid_search <- FALSE
-    fit_i <- tryCatch(fit_kalman_multi(panel, cfg_i),
+    # Call the non-recursive inner fitter directly; calling
+    # `fit_kalman_multi()` here would trip targets's cycle check.
+    fit_i <- tryCatch(fit_kalman_multi_one(panel, cfg_i),
                       error = function(e) NULL)
     if (is.null(fit_i) || inherits(fit_i, "kalman_multi_failed")) next
     grid$log_lik[i] <- as.numeric(stats::logLik(fit_i$model))
