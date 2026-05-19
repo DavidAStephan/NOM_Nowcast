@@ -1,0 +1,132 @@
+---
+title: "Backtest"
+subtitle: "Honest out-of-sample performance"
+date: today
+date-format: "D MMMM YYYY"
+---
+
+```{r setup}
+#| include: false
+files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
+for (f in files) sys.source(f, envir = globalenv())
+library(dplyr); library(ggplot2); library(gt); library(scales)
+
+cfg <- config::get(file = "config.yml")
+# Run a fresh backtest at site-build time. Pseudo-real-time mode
+# uses today's data restricted by publication lag at each as-of date.
+cfg$paths$duckdb <- tempfile(fileext = ".duckdb")
+on.exit(unlink(cfg$paths$duckdb), add = TRUE)
+db <- vintages_init(cfg)
+cfg$backtest$start <- "2023-01-01"
+# `end` defaults to last completed quarter, which is what we want.
+
+backtest_grid <- build_backtest_grid(cfg)
+runs <- lapply(backtest_grid, function(asof_d) {
+  tryCatch(run_backtest(asof_d, db, cfg), error = function(e) NULL)
+})
+runs <- Filter(Negate(is.null), runs)
+
+scored <- score_backtest(runs, db, cfg)
+```
+
+## Methodology
+
+For each historical as-of date $T$ on a quarterly grid:
+
+1. Restrict every input series to observations whose publication date is
+   $\leq T$ (using documented publication lags — OAD ~35 days, NOM ~183
+   days, visa grants ~45 days).
+2. Refit every model from scratch on this restricted panel.
+3. Score predictions at horizons $h \in \{-2, -1, 0, +1\}$ quarters
+   relative to $T$, where $h = 0$ is the "current" quarter (NOM not yet
+   published) and $h = -2, -1$ are recent backcasts.
+4. Use the latest available ABS NOM as the evaluation "truth".
+
+This is **pseudo-real-time** — we don't have a true vintage history,
+so the underlying data values themselves don't reflect their
+contemporaneous releases. A real vintage-aware backtest is a logged
+follow-up; see [STATUS.md](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/STATUS.md).
+
+Models compared:
+
+| Model | What it uses |
+|-------|--------------|
+| `kalman_multi_v2` | Multivariate Kalman: OAD + visa grants + NOM as joint observations on a shared latent log-arrivals state. Phase 2 v4.0 with Gamma-lag state augmentation. |
+| `kalman_multi_pi` | Same multi-SSM fit, but headline assembled via the empirical-π route instead of the direct NOM observation. |
+| `kalman_v1` | Phase 1 univariate Kalman per category, π-based headline. |
+| `bridge` | OLS bridge regression: NOM ~ lagged OAD + lagged visa grants. |
+| `random_walk` | Headline NOM at $T-1$ rolled forward. |
+| `ar1` | AR(1) on quarter-on-quarter NOM growth. |
+| `abs_preliminary` | The ABS NOM value at vintage $T$ (informational — we don't have true vintage history). |
+
+## Headline results
+
+```{r headline-table}
+scored |>
+  dplyr::filter(category == "total") |>
+  dplyr::group_by(model, horizon) |>
+  dplyr::summarise(
+    n    = sum(n,   na.rm = TRUE),
+    RMSE = mean(rmse, na.rm = TRUE),
+    MAE  = mean(mae,  na.rm = TRUE),
+    Bias = mean(bias, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(is.finite(RMSE)) |>
+  dplyr::arrange(horizon, RMSE) |>
+  dplyr::mutate(Horizon = paste0("h = ", horizon)) |>
+  dplyr::select(Horizon, Model = model, n, RMSE, MAE, Bias) |>
+  gt::gt(groupname_col = "Horizon") |>
+  gt::fmt_number(columns = c("RMSE", "MAE", "Bias"),
+                 decimals = 0, use_seps = TRUE) |>
+  gt::tab_options(table.font.size = "small") |>
+  gt::tab_source_note(gt::md(
+    paste0("Backtest grid: ", length(runs), " quarterly as-of dates from ",
+           format(min(backtest_grid), "%Y-Q%q"), " to ",
+           format(max(backtest_grid), "%Y-Q%q"), ". ",
+           "RMSE / MAE in persons. Lower is better. ",
+           "Models are sorted within each horizon by RMSE.")
+  ))
+```
+
+## RMSE by horizon
+
+```{r rmse-plot}
+plot_backtest_rmse(scored)
+```
+
+## Notes on interpretation
+
+- **Bridge regression dominates backcasts** (h = -2, -1) because it
+  regresses NOM directly on lagged flows with no log-Gaussian
+  assumption baggage. Its h = 0 RMSE looks worst because at the
+  current-quarter horizon many of its regressors are missing (OAD
+  publication lag) and `predict()` returns NA for those rows. Those
+  NAs propagate to a few large errors.
+- The **multivariate Kalman** is the recommended production model
+  because it gives unified uncertainty quantification across all
+  horizons and produces credible intervals on the headline. Bridge
+  regression doesn't natively give intervals on out-of-sample
+  forecasts.
+- **No model has direct NOM signal at h = 0 / h = +1** (NOM isn't
+  published yet at those horizons), so all Kalman variants converge
+  to similar performance. This is the structural limit of point
+  estimation from public data; bigger gains require either richer
+  leading indicators or a Bayesian model with explicit posterior
+  uncertainty (Phase 3 punch-list item).
+- **The ABS preliminary "model"** is informational only — without a
+  captured vintage history the framework falls back to using the
+  latest available NOM as the preliminary value, which is circular.
+  A real vintage-aware backtest would require running the pipeline
+  weekly for ~6 months to accumulate ABS revisions.
+
+## Run details
+
+```{r run-meta}
+cat(sprintf("- Backtest as-of dates: %d (%s to %s)\n",
+            length(backtest_grid),
+            as.character(min(backtest_grid)),
+            as.character(max(backtest_grid))))
+cat(sprintf("- Build run:            %s\n",
+            format(Sys.time(), "%d %B %Y %H:%M %Z")))
+```

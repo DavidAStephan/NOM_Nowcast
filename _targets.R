@@ -103,16 +103,11 @@ list(
              pattern = map(backtest_dates), iteration = "list"),
   tar_target(backtest_scored, score_backtest(backtest_runs, vintage_db, cfg_target)),
 
-  # ----------------------------------------------------------------- reports
-  # Skipped automatically when the quarto CLI isn't on the PATH so the
-  # manifest still builds in CI / minimal environments.
-  if (nzchar(Sys.which("quarto"))) {
-    list(
-      tar_quarto(report_nowcast,     path = "reports/nowcast_report.qmd"),
-      tar_quarto(report_methodology, path = "reports/methodology.qmd"),
-      tar_quarto(report_backtest,    path = "reports/backtest_report.qmd")
-    )
-  } else {
-    NULL
-  }
+  # The Quarto website at the project root (index.qmd / methodology.qmd /
+  # backtest.qmd / about.qmd) is rendered separately via `quarto render`
+  # so the GitHub Actions workflow can sequence pipeline run -> site
+  # render -> Pages deploy. We don't make rendering a targets node;
+  # that would force a rebuild every time any source qmd changed,
+  # which is wasteful on a daily local-iteration loop.
+  NULL
 )

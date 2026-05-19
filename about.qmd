@@ -1,0 +1,115 @@
+---
+title: "About"
+subtitle: "Data sources, limitations, and how to contribute"
+---
+
+## What this is
+
+A reproducible R pipeline that nowcasts Australian quarterly Net
+Overseas Migration (NOM) from public data only, and republishes the
+result as a static website on a weekly cadence. The site you're
+reading is regenerated from scratch by a GitHub Actions workflow that
+fetches the latest ABS / DHA data, refits the model, and pushes the
+rendered HTML to GitHub Pages.
+
+The codebase is on GitHub: [DavidAStephan/NOM_Nowcast](https://github.com/DavidAStephan/NOM_Nowcast).
+Pull requests welcome.
+
+## Data sources
+
+| Source | What | Update cadence | Publication lag |
+|--------|------|----------------|-----------------|
+| ABS Overseas Arrivals and Departures (cat. 3401.0) | Long-term arrivals / departures by visa group | Monthly | ~5 weeks |
+| ABS Quarterly Population Estimates (cat. 3101.0) | Headline NOM total | Quarterly | ~6 months |
+| ABS Overseas Migration (cat. 3407.0) | Annual NOM by 4-category visa breakdown | Annual (FY) | ~9 months |
+| Department of Home Affairs (via data.gov.au CKAN) | Visa grants by program (Student, Visitor, Skilled, Working Holiday, Temporary Graduate) | Quarterly | ~45 days |
+
+All sources are accessible via free public APIs / file downloads.
+Fetchers live in [`R/ingest/`](https://github.com/DavidAStephan/NOM_Nowcast/tree/main/R/ingest).
+
+## Limitations
+
+- **No private microdata.** Without PLIDA-level stay-duration data the
+  model can't directly observe the 12/16-month rule. It estimates the
+  OAD-to-NOM mapping empirically from completed cohorts.
+- **No granular quarterly visa breakdown.** ABS retired quarterly
+  NOM-by-visa publication. The model uses annual FY visa data
+  broadcast across quarters via OAD-arrival proportions.
+- **Pseudo-real-time backtest only.** The site has no vintage
+  history yet — at each backtest as-of date the underlying data
+  values are today's values, restricted to what would have been
+  publicly observable then. A true vintage backtest will accumulate
+  as the pipeline runs weekly.
+- **Uncertainty intervals are not full Bayesian.** They come from the
+  Kalman filter's MLE point estimate, not from posterior sampling.
+  Phase 3 (Stan hierarchical model, [scaffold](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/hierarchical_nom.stan)) targets proper posterior intervals.
+
+## How the site is built
+
+```
+Weekly cron (Mondays 06:00 UTC)
+  │
+  ├── GitHub Actions: ubuntu-latest runner
+  │     │
+  │     ├── Install R 4.5.3 (RSPM binaries)
+  │     ├── Install Quarto CLI
+  │     ├── Restore renv-pinned packages
+  │     │
+  │     ├── targets::tar_make()
+  │     │     ├── Fetch ABS OAD via {readabs}
+  │     │     ├── Fetch ABS NOM (cat. 3101.0)
+  │     │     ├── Fetch DHA visa grants via data.gov.au CKAN
+  │     │     ├── Build quarterly panel
+  │     │     ├── Estimate pi (empirical + smoothed)
+  │     │     ├── Fit univariate Kalman per category (Phase 1)
+  │     │     ├── Fit multivariate Kalman with Gamma lag (Phase 2 v4.0)
+  │     │     ├── Run benchmarks (bridge, RW, AR1)
+  │     │     └── Run pseudo-real-time backtest
+  │     │
+  │     ├── quarto render  (this site)
+  │     └── peaceiris/actions-gh-pages → gh-pages branch
+  │
+  └── GitHub Pages serves _site/ from gh-pages branch
+```
+
+End-to-end build time: ~10-15 minutes.
+
+## Model architecture in one paragraph
+
+A bivariate state-space Kalman with three observation rows — OAD
+long-term arrivals, lagged visa grants, and quarterly NOM itself —
+all loading on a single latent log-arrivals state with a damped
+local-linear trend and quarterly seasonal. Visa grants are
+state-augmented with a discretised Gamma lag (mode at 1 quarter,
+4-quarter tail). The headline NOM forecast comes directly from the
+latent state via a calibrated offset, bypassing the empirical-π
+extrapolation that earlier model versions relied on. Full equations
+on the [Methodology](methodology.qmd) page.
+
+## Contributing
+
+The codebase uses standard R/`{targets}`/Quarto idioms. Open issues
+and PRs are welcome:
+
+- [Open issues](https://github.com/DavidAStephan/NOM_Nowcast/issues)
+- [Open pull request](https://github.com/DavidAStephan/NOM_Nowcast/pulls)
+- [STATUS.md](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/STATUS.md) lists the current model version, recent
+  backtest numbers, and the open punch-list.
+
+Areas that could use help:
+
+- **Phase 3 Stan model** — the scaffold compiles but hasn't been
+  calibrated on the live panel.
+- **Per-category modelling.** Currently the multivariate fit is
+  aggregate only. Per-visa-category fits with cross-category
+  partial pooling would give a category decomposition of the
+  headline.
+- **Better leading indicators.** Department of Education student
+  enrolments and BITRE airline passenger data are obvious candidates;
+  both sources have moved to Power BI dashboards behind the public
+  download URLs and need re-wiring via data.gov.au or alternative
+  endpoints.
+
+## Licence
+
+MIT. See [LICENSE](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/LICENSE).

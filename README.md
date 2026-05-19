@@ -6,6 +6,30 @@ modelling generations (univariate Kalman → multi-source state-space →
 Bayesian hierarchical) and a vintage-aware backtest framework that compares
 the model against the ABS preliminary estimate.
 
+**Live site:** <https://DavidAStephan.github.io/NOM_Nowcast/>
+
+The site is rebuilt every Monday 06:00 UTC by a GitHub Actions
+workflow ([`.github/workflows/render.yml`](.github/workflows/render.yml))
+that fetches the latest ABS / DHA data, refits the model, renders the
+Quarto site, and deploys to GitHub Pages.
+
+## Deploy your own fork
+
+1. **Fork the repo** on GitHub.
+2. **Settings → Pages → Source: "GitHub Actions"**.
+3. **Settings → Actions → General → Workflow permissions → "Read and
+   write permissions"** (so the workflow can publish a Pages artifact).
+4. Edit `_quarto.yml` and `.github/workflows/render.yml` and replace
+   `DavidAStephan/NOM_Nowcast` with `your-user/your-repo`.
+5. Push to `main` (or use **Actions → Render and deploy → Run workflow**).
+   First run will take ~10-15 minutes — R package install dominates.
+6. Subsequent runs reuse the package cache and complete in ~5 minutes.
+
+R dependencies install via the Posit Public Package Manager (RSPM)
+binaries — no compilation, no apt deps beyond what's on the standard
+`ubuntu-latest` image. cmdstanr / Stan are intentionally *not* installed
+in CI (Phase 3 is scaffolded only).
+
 ## Quick start
 
 ```r

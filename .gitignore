@@ -40,6 +40,13 @@ reports/*_files/
 reports/*.html
 reports/*_cache/
 
+# Quarto site build outputs
+_site/
+_freeze/
+.quarto/
+*_files/
+*_cache/
+
 # OS junk
 .DS_Store
 Thumbs.db

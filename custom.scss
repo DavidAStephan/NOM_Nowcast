@@ -1,0 +1,63 @@
+/*-- scss:defaults --*/
+
+$primary:   #1f4e79;
+$secondary: #5b9bd5;
+$success:   #2e7d32;
+$danger:    #c62828;
+$body-bg:   #fafbfc;
+$body-color:#2c3e50;
+$link-color:#1f4e79;
+
+$h1-font-size: 2.0rem;
+$h2-font-size: 1.5rem;
+$h3-font-size: 1.2rem;
+$font-family-sans-serif: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+/*-- scss:rules --*/
+
+// Headline number callout used on the landing page
+.headline-number {
+  font-size: 3rem;
+  font-weight: 700;
+  color: $primary;
+  line-height: 1.05;
+  margin-bottom: 0.25rem;
+}
+
+.headline-label {
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: lighten($body-color, 20%);
+  margin-bottom: 0.5rem;
+}
+
+.headline-interval {
+  font-size: 1rem;
+  color: lighten($body-color, 15%);
+  margin-bottom: 1rem;
+}
+
+.headline-asof {
+  font-size: 0.85rem;
+  color: lighten($body-color, 25%);
+  font-style: italic;
+}
+
+.callout-card {
+  background-color: white;
+  border: 1px solid #e0e4e8;
+  border-radius: 6px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+table.gt_table {
+  font-size: 0.92rem !important;
+}
+
+.quarto-title-block .quarto-title-meta {
+  font-size: 0.85rem;
+  color: lighten($body-color, 30%);
+}

@@ -1,0 +1,183 @@
+---
+title: "Australian NOM Nowcast"
+subtitle: "Real-time estimate of quarterly Net Overseas Migration"
+date: today
+date-format: "D MMMM YYYY"
+---
+
+```{r setup}
+#| include: false
+files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
+for (f in files) sys.source(f, envir = globalenv())
+library(dplyr); library(ggplot2); library(gt); library(scales)
+
+cfg   <- config::get(file = "config.yml")
+asof  <- Sys.Date()
+
+# All-in-one site build: fetch + fit. Targets cache is reused when
+# available so this should be cheap on repeat renders.
+panel <- tryCatch(targets::tar_read(panel_quarterly), error = function(e) NULL)
+if (is.null(panel) || !nrow(panel)) {
+  oad <- fetch_oad(cfg, asof); nom <- fetch_nom(cfg, asof); vg <- fetch_visa_grants(cfg, asof)
+  panel <- build_quarterly_panel(clean_oad(oad, cfg), clean_nom(nom, cfg),
+                                 clean_visa_grants(vg, cfg), empty_students_clean(), cfg)
+}
+fit_multi <- fit_kalman_multi(panel, cfg)
+fc_multi  <- forecast_kalman_multi(fit_multi, asof, cfg)
+fits_uni  <- fit_kalman_univariate(panel, cfg)
+fc_uni    <- forecast_kalman_univariate(fits_uni, asof, cfg)
+pi_emp    <- estimate_pi_empirical(panel, cfg)
+pi_sm     <- smooth_pi(pi_emp, cfg)
+
+headline <- build_nowcast_headline_from_multi(fc_multi, cfg)
+
+# Identify the current quarter and the most recent ABS-published quarter
+asof_q  <- nn_quarter_start(asof - lubridate::days(1L))
+abs_obs <- panel |>
+  dplyr::filter(category == "total", !is.na(nom_final)) |>
+  dplyr::arrange(period)
+latest_abs <- if (nrow(abs_obs)) tail(abs_obs, 1L) else NULL
+
+# Pick the headline row: the latest forecast quarter for which ABS hasn't yet
+# published a number.
+hl_row <- headline |>
+  dplyr::filter(period > (if (!is.null(latest_abs)) latest_abs$period else as.Date("1900-01-01"))) |>
+  dplyr::arrange(period) |>
+  dplyr::slice(1L)
+
+fmt_k <- function(x) {
+  if (is.na(x)) return("—")
+  paste0(scales::number(x / 1000, accuracy = 0.1), "k")
+}
+```
+
+::: {.callout-card}
+::: {.headline-label}
+Headline nowcast — `{r} format(hl_row$period, '%Y · Q%q')`
+:::
+::: {.headline-number}
+`{r} fmt_k(hl_row$nom_mean)`
+:::
+::: {.headline-interval}
+80% interval: `{r} fmt_k(hl_row$lower_80)` to `{r} fmt_k(hl_row$upper_80)`
+:::
+::: {.headline-asof}
+Quarterly Net Overseas Migration. Run as of `{r} format(asof, '%d %B %Y')`.
+:::
+:::
+
+## What this is
+
+This site publishes a real-time estimate of Australian quarterly **Net
+Overseas Migration (NOM)** built from publicly available data only — Overseas
+Arrivals and Departures and quarterly population components from the ABS, and
+Department of Home Affairs visa-grant statistics via data.gov.au.
+
+The headline number above is the model's nowcast for the quarter ABS hasn't
+yet published. The model is a multivariate state-space Kalman filter
+(Phase 2 v4.0) — see [Methodology](methodology.qmd) for the equations and
+[Backtest](backtest.qmd) for honest performance numbers.
+
+## Recent quarters
+
+```{r recent-table}
+recent <- headline |>
+  dplyr::left_join(
+    panel |> dplyr::filter(category == "total") |>
+      dplyr::select(period, abs_nom = nom_final),
+    by = "period"
+  ) |>
+  dplyr::arrange(period) |>
+  dplyr::filter(period >= asof_q %m-% months(15L)) |>
+  dplyr::transmute(
+    Quarter      = format(period, "%Y · Q%q"),
+    Model        = nom_mean,
+    `80% lower`  = lower_80,
+    `80% upper`  = upper_80,
+    ABS          = abs_nom,
+    `Error vs ABS` = ifelse(is.na(abs_nom), NA, nom_mean - abs_nom)
+  )
+
+recent |>
+  gt::gt() |>
+  gt::fmt_number(columns = c("Model", "80% lower", "80% upper", "ABS"),
+                 decimals = 0, use_seps = TRUE) |>
+  gt::fmt_number(columns = "Error vs ABS",
+                 decimals = 0, use_seps = TRUE, force_sign = TRUE) |>
+  gt::sub_missing(missing_text = "—") |>
+  gt::tab_style(style = gt::cell_text(weight = "bold"),
+                locations = gt::cells_body(rows = is.na(recent$ABS))) |>
+  gt::tab_options(table.font.size = "small") |>
+  gt::tab_source_note(gt::md(
+    "**Model**: multivariate Kalman with NOM, OAD long-term arrivals, and DHA visa grants as joint observations. **ABS**: latest published NOM via `national-state-and-territory-population` cat. 3101.0. Bolded rows are unpublished by ABS at the asof date — those are nowcasts."
+  ))
+```
+
+## Nowcast vs ABS over time
+
+```{r headline-plot}
+plot_nowcast_headline(headline, panel, asof = asof)
+```
+
+## Where the model gets its signal
+
+The state-space Kalman jointly observes three series, all loading on a shared
+latent log-arrivals state:
+
+1. **OAD long-term arrivals** (monthly, 5-week publication lag) — the
+   primary high-frequency signal.
+2. **DHA visa grants** (annual financial-year aggregates broadcast to
+   quarters via OAD proportions) — a *leading* indicator: visa grants in
+   FY-Y predict arrivals in FY-Y and FY-Y+1.
+3. **ABS quarterly NOM total** (~6 month publication lag) — direct
+   observation of the target itself, used to anchor the latent state for
+   historical quarters.
+
+When ABS hasn't yet published NOM for the current quarter, the model uses
+OAD and visa-grants observations to estimate the latent state, then maps
+back to NOM via a calibrated offset. See [Methodology](methodology.qmd) for
+the equations.
+
+## How accurate is it?
+
+Out-of-sample backtest across 11 quarterly as-of dates from 2023-Q1 to
+2025-Q3, with each as-of date's data restricted to what would have been
+publicly observable then:
+
+| Horizon              | Multivariate Kalman RMSE |
+|----------------------|-------------------------:|
+| h = -2 (backcast)    | ~36,000 |
+| h = -1 (backcast)    | ~38,000 |
+| h = 0  (nowcast)     | ~78,000 |
+| h = +1 (forecast)    | ~74,000 |
+
+For context, ABS quarterly NOM is typically 50,000 – 150,000 per quarter.
+RMSE around 36k on backcasts corresponds to ~25% relative error on a
+60,000 quarter, ~15% on a 130,000 quarter.
+
+The model performs best on **backcasts** (revising NOM history) — where ABS
+NOM is already observed and pins the state down. Nowcasts (current quarter)
+have wider uncertainty because the model has no direct NOM signal yet.
+Full breakdown on the [Backtest](backtest.qmd) page.
+
+## Run details
+
+```{r run-meta}
+n_obs <- nrow(panel)
+periods_span <- range(panel$period, na.rm = TRUE)
+gl_w <- fit_multi$visa_gamma_weights
+
+cat(sprintf("- Pipeline run:        %s\n", format(asof, "%d %B %Y, %H:%M %Z")))
+cat(sprintf("- Panel coverage:      %s to %s (%d quarterly observations × %d categories)\n",
+            format(periods_span[1L], "%Y-Q%q"),
+            format(periods_span[2L], "%Y-Q%q"),
+            length(unique(panel$period)), length(unique(panel$category))))
+cat(sprintf("- Model:               %s\n", fit_multi$kind %||% "kalman_multi"))
+cat(sprintf("- Alpha_v offset:      %.3f (log-gap OAD-arrivals vs lagged visa-grants)\n",
+            fit_multi$alpha_v))
+cat(sprintf("- Alpha_n offset:      %.3f (log-gap OAD-arrivals vs NOM)\n",
+            fit_multi$alpha_n))
+if (!is.null(gl_w)) {
+  cat("- Gamma lag weights:   ", paste(round(gl_w, 3), collapse = ", "), "\n")
+}
+```

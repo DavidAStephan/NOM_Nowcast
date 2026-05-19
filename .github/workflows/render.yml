@@ -1,0 +1,113 @@
+name: Render and deploy
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"        # Mondays 06:00 UTC ~= 16:00 AEST
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "R/**"
+      - "stan/**"
+      - "*.qmd"
+      - "_quarto.yml"
+      - "custom.scss"
+      - "config.yml"
+      - "_targets.R"
+      - ".github/workflows/render.yml"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      RENV_PATHS_ROOT: ~/.cache/R/renv
+      R_KEEP_PKG_SOURCE: "yes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.5.3"
+          use-public-rspm: true
+
+      - name: Set up pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Set up Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
+      # Use RSPM binaries (no compilation = ~2 min instead of ~15)
+      - name: Install R dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::config
+            any::DBI
+            any::dplyr
+            any::duckdb
+            any::fixest
+            any::fs
+            any::ggplot2
+            any::glue
+            any::gt
+            any::httr2
+            any::jsonlite
+            any::KFAS
+            any::lubridate
+            any::purrr
+            any::quarto
+            any::readabs
+            any::readr
+            any::readxl
+            any::rvest
+            any::scales
+            any::stringr
+            any::tarchetypes
+            any::targets
+            any::tibble
+            any::tidyr
+            any::tsibble
+            any::yaml
+            any::cli
+            any::digest
+            any::sass
+          cache-version: 2
+
+      - name: Run pipeline (fetch data, fit models, populate targets cache)
+        run: |
+          options(repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"))
+          targets::tar_make()
+        shell: Rscript {0}
+
+      - name: Render Quarto site
+        run: quarto render --to html
+
+      - name: Upload artifact for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: render
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

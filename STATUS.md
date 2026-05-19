@@ -2,8 +2,10 @@
 
 **Last touched:** 2026-05-19
 **Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
-**Latest commit:** Phase 2 v5.0 — grid-search for Gamma (α, β); picks
-  α=1, β=2 from data but backtest is a wash with v4 fixed
+**Latest commit:** Productionisation — Quarto website at root,
+  GitHub Actions weekly cron, deploys to GitHub Pages
+**Live site:** <https://DavidAStephan.github.io/NOM_Nowcast/>
+  (live after first GitHub Actions run completes)
 **R version pinned:** 4.5.3 via `renv.lock` (123 packages)
 **Tests:** 81 passing
 

@@ -1,0 +1,67 @@
+project:
+  type: website
+  output-dir: _site
+  preview:
+    port: 4200
+  render:
+    - "index.qmd"
+    - "methodology.qmd"
+    - "backtest.qmd"
+    - "about.qmd"
+
+website:
+  title: "Australian NOM Nowcast"
+  description: >
+    A real-time nowcast of Australian Net Overseas Migration,
+    built from public ABS / DHA data with a multi-source state-space model.
+  site-url: "https://DavidAStephan.github.io/NOM_Nowcast/"
+  repo-url: "https://github.com/DavidAStephan/NOM_Nowcast"
+  repo-actions: [edit, issue]
+  search:
+    type: textbox
+  navbar:
+    background: dark
+    left:
+      - href: index.qmd
+        text: "Nowcast"
+      - href: methodology.qmd
+        text: "Methodology"
+      - href: backtest.qmd
+        text: "Backtest"
+      - href: about.qmd
+        text: "About"
+    right:
+      - icon: github
+        href: "https://github.com/DavidAStephan/NOM_Nowcast"
+        aria-label: "GitHub repo"
+  page-footer:
+    left: |
+      Updated automatically from ABS / DHA public data.
+      Source code on [GitHub](https://github.com/DavidAStephan/NOM_Nowcast).
+    right: |
+      Built with [{{< fa brands r-project >}}](https://www.r-project.org/),
+      [{{< fa scale-balanced >}} KFAS](https://cran.r-project.org/package=KFAS),
+      and [{{< fa book >}} Quarto](https://quarto.org/).
+
+format:
+  html:
+    theme: [cosmo, custom.scss]
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    code-fold: true
+    code-tools: true
+    embed-resources: false
+    fig-width: 9
+    fig-height: 5
+    fig-dpi: 110
+    fig-cap-location: bottom
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  freeze: auto
