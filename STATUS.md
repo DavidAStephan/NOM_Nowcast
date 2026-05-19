@@ -2,9 +2,10 @@
 
 **Last touched:** 2026-05-19
 **Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
-**Latest commit:** Phase 2 v1.0 (multivariate Kalman with visa-grants block)
+**Latest commit:** Phase 2 v2.0 (trivariate Kalman; NOM as a direct
+  observation row; pi-free headline)
 **R version pinned:** 4.5.3 via `renv.lock` (123 packages)
-**Tests:** 59 passing (35 baseline + 24 multi-SSM)
+**Tests:** 72 passing
 
 ## TL;DR — what you have
 
@@ -19,15 +20,21 @@ pass.
 | Model                          | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
 |--------------------------------|----------:|----------:|---------:|----------:|
 | **bridge** (OAD + visa grants) | **21,511** | **25,656** | – | – |
-| **kalman_multi** (Phase 2 v1.0) | 62,963 | 71,547 | **58,869** | **51,501** |
-| kalman_v1 (Phase 1, damped)    | 57,432    | 60,585    | 78,949   | 74,929    |
+| **kalman_multi_v2** (NOM block) | **37,523** | **40,745** | 77,699 | 72,793 |
 | random walk                    | 39,188    | 46,857    | –        | –         |
 | AR(1)                          | 48,150    | –         | –        | –         |
+| kalman_v1 (Phase 1, π-route)   | 55,700    | 59,845    | 78,042   | 77,350    |
+| kalman_multi_pi (v1.0 bivariate)| 58,861   | 75,848    | 78,622   | 71,303    |
 
-Phase 2 v1.0 reduces nowcast RMSE by **25%** and 1q-forecast RMSE by
-**31%** over the Phase 1 Kalman. Bridge regression still wins
-backcasts (h<0), where OAD is already observed and the extra
-multivariate observation row only adds noise.
+Phase 2 v2.0 cuts backcast RMSE by **33-40%** versus the v1 Kalman
+variants. The NOM observation row directly anchors the latent state
+at past quarters where ABS has already published — sidestepping the
+π extrapolation that broke under the 2025 regime shift. At h=0/+1
+NOM is unobserved so all Kalman variants converge to similar
+performance.
+
+Bridge regression still wins backcasts (h<0) because it regresses
+NOM directly on lagged flows with no log-Gaussian assumption.
 
 In-sample headline performance against ABS NOM, latest 8 completed
 quarters: errors within ±13%. Out-of-sample 2025: model over-shoots
@@ -41,8 +48,9 @@ could adapt (no leading indicators in the v0.5 Kalman).
 | **Phase 0** scaffold | ✅ done | DESCRIPTION, renv, _targets.R, config.yml, dirs |
 | **Phase 1** univariate Kalman | ✅ done + calibrated against live ABS |
 | **Phase 2 v0.5** | ✅ done | damped trend, CKAN visa grants, bridge regression, real backtest |
-| **Phase 2 v1.0** | ✅ done | bivariate KFAS SSM, fixed-quarter visa-grants lead, +25% nowcast lift |
-| **Phase 2 v2.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block |
+| **Phase 2 v1.0** | ✅ done | bivariate KFAS SSM, fixed-quarter visa-grants lead |
+| **Phase 2 v2.0** | ✅ done | trivariate SSM, NOM as third observation row, π-free headline, 33-40% backcast lift |
+| **Phase 2 v3.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block, time-varying $\alpha_n$ |
 | **Phase 3** | ⏳ scaffolded | `stan/hierarchical_nom.stan` compiles but not calibrated |
 | **Phase 4** | ✅ effectively done | bridge regression is the benchmark |
 
@@ -197,11 +205,20 @@ passes `.envir = parent.frame()` explicitly — preserve that pattern.
 
 ### High-impact next steps
 
-1. **Phase 2 v2.0 — parametric Gamma lag.** The v1.0 multivariate SSM
-   uses a fixed single-quarter lead from visa grants to arrivals.
-   Replacing it with a discretised Gamma(α, β) lag distribution
-   jointly estimated with the rest of the model is the natural
-   next step. The `gamma_lag_weights()` helper in
+1. **Time-varying $\alpha_n$.** v2.0 uses a constant offset between
+   $\log\mathrm{NOM}$ and the latent log-arrivals state. That
+   captures the long-run mean but misses the *regime* shifts in π
+   (e.g. 2025's faster NOM contraction vs OAD). Modelling
+   $\alpha_n$ as a slow random walk or GP would let the Kalman
+   distinguish "OAD changed" from "π changed". Implementation: add
+   $\alpha_n$ as an unobserved state component with its own
+   innovation variance.
+
+2. **Phase 2 v3.0 — parametric Gamma lag.** v1.0/v2.0 use a fixed
+   single-quarter lead from visa grants to arrivals. Replacing it
+   with a discretised Gamma(α, β) lag distribution jointly estimated
+   with the rest of the model is the natural next refinement. The
+   `gamma_lag_weights()` helper in
    [R/models/kalman_multi.R](R/models/kalman_multi.R) is already
    there; what's missing is the time-varying Z matrix that loads
    a weighted sum of past latent states onto each visa-grants

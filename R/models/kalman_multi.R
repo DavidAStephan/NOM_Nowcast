@@ -61,6 +61,7 @@ fit_kalman_multi <- function(panel, cfg) {
   lead_q <- cfg$models$kalman_multi$visa_lead_quarters %||% 1L
   damping <- cfg$models$kalman$damping_phi %||% 0.85
   seasonal_period <- cfg$models$kalman$seasonal_period %||% 4L
+  include_nom <- isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE)
 
   # Visa-grants signal for the total category: sum across visa
   # categories in the panel (the "total" row itself doesn't carry
@@ -74,42 +75,45 @@ fit_kalman_multi <- function(panel, cfg) {
                                                NA_real_, .data$visa_grants))
 
   joined <- total |>
-    dplyr::select("period", oad_arr = "oad_lt_arrivals") |>
+    dplyr::select("period", oad_arr = "oad_lt_arrivals",
+                  nom_final = "nom_final") |>
     dplyr::left_join(vg_total, by = "period") |>
     dplyr::arrange(.data$period)
 
-  # Construct y1 = log(1+arrivals), y2 = log(1+V_{t-ell})
   y1 <- log1p(pmax(joined$oad_arr, 0))
   vg_lag <- shift_lag(joined$visa_grants, lead_q)
   y2_raw <- log1p(pmax(vg_lag, 0))
+  alpha_v <- calibrate_offset(y2_raw, y1)
+  y2 <- y2_raw - alpha_v
 
-  # Calibrate alpha from rows where both series are non-NA AND
-  # non-zero in level. We use the long-run mean to avoid letting any
-  # single quarter dominate.
-  both_ok <- !is.na(y1) & !is.na(y2_raw) & is.finite(y1) & is.finite(y2_raw) &
-             y1 > 0 & y2_raw > 0
-  if (sum(both_ok) < 8L) {
-    nn_warn("kalman_multi: insufficient overlap ({sum(both_ok)} quarters) ",
-            "between OAD arrivals and lagged visa grants; falling back to ",
-            "univariate fit.")
-    alpha <- 0
-  } else {
-    alpha <- mean(y2_raw[both_ok] - y1[both_ok])
+  alpha_n <- 0
+  y3 <- NULL
+  if (include_nom) {
+    y3_raw <- log1p(pmax(joined$nom_final, 0))
+    alpha_n <- calibrate_offset(y3_raw, y1)
+    y3 <- y3_raw - alpha_n
   }
 
-  y2 <- y2_raw - alpha
-  # When visa-grants is missing for a quarter, KFAS treats NA as
-  # "missing observation" and propagates the state with the
-  # measurement variance contribution from y1 alone.
-  y_mat <- cbind(arr = y1, vg = y2)
+  y_mat <- if (include_nom) cbind(arr = y1, vg = y2, nom = y3)
+           else             cbind(arr = y1, vg = y2)
 
   ssm <- build_multi_ssmodel(y_mat,
                              phi             = damping,
-                             seasonal_period = seasonal_period)
-  # 5 free variance parameters: H[1,1], H[2,2], Q[1,1] (level), Q[2,2]
-  # (slope), Q[3,3] (seasonal). Inits=0 for all.
+                             seasonal_period = seasonal_period,
+                             include_nom     = include_nom)
+  # Free variance parameters:
+  #   bivariate  (no NOM): 5 = H[1,1] + H[2,2] + Q[1,1..3,3]
+  #   trivariate (w/ NOM): 6 = H[1,1] + H[2,2] + H[3,3] + Q[1,1..3,3]
+  #
+  # Initial values for the log-variance hyperparameters. With three
+  # slope-1 observations on a shared level state the optimiser is
+  # prone to collapse to an all-zero variance corner; seeding the
+  # state-innovation variances at log(0.01)=-4.6 and the observation
+  # variances at log(0.1)=-2.3 keeps it in the interior.
+  inits <- if (include_nom) c(-2.3, -2.3, -2.3, -4.6, -4.6, -4.6)
+           else             c(-2.3, -2.3,        -4.6, -4.6, -4.6)
   fit <- tryCatch(
-    KFAS::fitSSM(ssm, inits = rep(0, 5), method = "BFGS"),
+    KFAS::fitSSM(ssm, inits = inits, method = "BFGS"),
     error = function(e) e
   )
   if (inherits(fit, "error")) {
@@ -128,13 +132,34 @@ fit_kalman_multi <- function(panel, cfg) {
       model          = fit$model,
       periods        = joined$period,
       y              = y_mat,
-      alpha          = alpha,
+      alpha_v        = alpha_v,
+      alpha_n        = alpha_n,
+      include_nom    = include_nom,
       lead_quarters  = lead_q,
       transformation = "log1p",
-      kind           = "kalman_multi_v1"
+      kind           = if (include_nom) "kalman_multi_v2" else "kalman_multi_v1"
     ),
     class = "kalman_multi_fit"
   )
+}
+
+#' Calibrate the mean log-gap between two series over overlapping
+#' non-missing, non-zero quarters.
+#'
+#' Used to demean the visa-grants and NOM observation rows so they
+#' line up with the OAD log-arrivals state at slope 1.
+#'
+#' @keywords internal
+calibrate_offset <- function(y_target, y_reference, min_overlap = 8L) {
+  ok <- !is.na(y_target) & !is.na(y_reference) &
+        is.finite(y_target) & is.finite(y_reference) &
+        y_target > 0 & y_reference > 0
+  if (sum(ok) < min_overlap) {
+    nn_warn("calibrate_offset: insufficient overlap ({sum(ok)} obs); ",
+            "using zero offset.")
+    return(0)
+  }
+  mean(y_target[ok] - y_reference[ok])
 }
 
 #' Build the bivariate SSModel used by [fit_kalman_multi()].
@@ -145,21 +170,19 @@ fit_kalman_multi <- function(panel, cfg) {
 #' project.
 #'
 #' @keywords internal
-build_multi_ssmodel <- function(y_mat, phi, seasonal_period) {
-  # State: [level, slope, seasonal_lag_0, seasonal_lag_1, seasonal_lag_2]
-  # (3-quarter rolling sum + 1 = 4-quarter seasonal — see KFAS docs.)
-  # We assemble the design matrices by hand for clarity and to keep
-  # full control over the cross-equation loadings.
-  m_trend <- 2L                                # level, slope
-  m_seas  <- seasonal_period - 1L              # dummy seasonal lags
+build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
+                                include_nom = FALSE) {
+  # State layout: [level, slope, seasonal_lag_0, ..., seasonal_lag_(S-2)]
+  # with a damped slope (phi). The dummy seasonal is implemented as a
+  # companion form whose first row is -sum(other lags).
+  m_trend <- 2L
+  m_seas  <- seasonal_period - 1L
   m       <- m_trend + m_seas
+  p       <- if (include_nom) 3L else 2L
 
-  # Transition matrix T_mat
   T_mat <- matrix(0, m, m)
   T_mat[1, 1] <- 1; T_mat[1, 2] <- 1
   T_mat[2, 2] <- phi
-  # Quarterly dummy seasonal: gamma[t] = -sum_{s=1}^{S-1} gamma[t-s] + w[t]
-  # Implemented as a companion form on (m_trend + 1):(m_trend + m_seas).
   for (j in seq_len(m_seas)) {
     T_mat[m_trend + 1L, m_trend + j] <- -1
   }
@@ -169,39 +192,33 @@ build_multi_ssmodel <- function(y_mat, phi, seasonal_period) {
     }
   }
 
-  # Observation matrix Z (p x m): row 1 (arrivals) = level + seasonal_lag_0;
-  # row 2 (visa grants) = level only.
-  Z_mat <- matrix(0, 2L, m)
-  Z_mat[1, 1] <- 1                       # level -> arrivals
-  Z_mat[1, m_trend + 1L] <- 1            # seasonal -> arrivals
-  Z_mat[2, 1] <- 1                       # level -> visa grants
+  # Observation matrix Z (p x m). All rows load on the level state
+  # with slope 1 (visa grants and NOM are pre-demeaned). OAD
+  # additionally loads on the first seasonal lag.
+  Z_mat <- matrix(0, p, m)
+  Z_mat[1, 1] <- 1                        # level -> arrivals
+  Z_mat[1, m_trend + 1L] <- 1             # seasonal -> arrivals
+  Z_mat[2, 1] <- 1                        # level -> visa grants
+  if (include_nom) Z_mat[3, 1] <- 1       # level -> NOM
 
-  # Selection R: trend (2 innovations) + 1 seasonal innovation.
   R_mat <- matrix(0, m, 3L)
   R_mat[1, 1] <- 1
   R_mat[2, 2] <- 1
   R_mat[m_trend + 1L, 3L] <- 1
   Q_mat <- diag(c(NA_real_, NA_real_, NA_real_))   # MLE-estimated
 
-  # Observation variance H: 2x2, diagonal, both NA -> MLE.
-  H_mat <- diag(c(NA_real_, NA_real_))
+  H_mat <- diag(rep(NA_real_, p))                  # MLE-estimated
 
-  # Diffuse init on level, slope; small priors on seasonals
   P1    <- diag(rep(0, m))
   P1inf <- diag(c(1, 1, rep(0, m_seas)))
-  for (j in (m_trend + 1L):m) P1[j, j] <- 1   # mild prior on seasonal lags
+  for (j in (m_trend + 1L):m) P1[j, j] <- 1
 
   state_names <- c("level", "slope",
                    paste0("seasonal_lag_", seq_len(m_seas) - 1L))
 
-  # Inline-namespaced builder, same dodge as the univariate damped path:
-  # KFAS's formula walker doesn't accept pkg::fn or pre-built blocks
-  # passed by name, so we import the constructors locally and inline
-  # the SSMcustom call.
   SSModel   <- KFAS::SSModel
   SSMcustom <- KFAS::SSMcustom
 
-  # Wrap y_mat in an array of dim (n x p) for SSModel formula.
   y_lhs <- y_mat
   SSModel(
     y_lhs ~ -1 +
@@ -305,11 +322,27 @@ forecast_kalman_multi <- function(fit, asof, cfg) {
   out$se_log <- pmin(out$se_log, 1.0, na.rm = FALSE)
   out$mean_level <- expm1(out$mean_log + 0.5 * (out$se_log^2))
 
+  # When NOM is in the observation block, derive a NOM forecast
+  # directly from the latent level state via the calibrated offset
+  # alpha_n. This bypasses the pi-based assembly entirely for the
+  # headline; see [`build_nowcast_headline_from_multi()`].
+  if (isTRUE(fit$include_nom %||% FALSE)) {
+    out$nom_log    <- out$mean_log + (fit$alpha_n %||% 0)
+    out$nom_level  <- expm1(out$nom_log + 0.5 * (out$se_log^2))
+    out$nom_se_log <- out$se_log
+  } else {
+    out$nom_log    <- NA_real_
+    out$nom_level  <- NA_real_
+    out$nom_se_log <- NA_real_
+  }
+
   # The multivariate fit covers only the "total" category and the
-  # "arrival" direction. To get a NOM headline, the existing
-  # `build_nowcast_categories()` needs both arrivals and departures.
-  # Departures for "total" come from the univariate Kalman; the
-  # multivariate fit replaces the arrivals row only.
+  # "arrival" direction. To get a NOM headline via the pi-route, the
+  # existing `build_nowcast_categories()` needs both arrivals and
+  # departures. The univariate Kalman covers departures and per-
+  # category arrivals; the multivariate fit replaces the total /
+  # arrival row only (and, if NOM is in the block, exposes a direct
+  # NOM forecast via the *_nom columns).
   out |>
     dplyr::mutate(direction = "arrival", category = "total")
 }
@@ -347,6 +380,61 @@ combine_kalman_forecasts <- function(uni_fc, multi_fc, cfg) {
     dplyr::select(dplyr::any_of(names(uni_fc)))
   dplyr::bind_rows(uni_keep, multi_use) |>
     dplyr::arrange(.data$category, .data$direction, .data$period)
+}
+
+#' Build a NOM headline directly from a trivariate (v2) multi-SSM fit
+#'
+#' When `cfg$models$kalman_multi$include_nom` is TRUE, the multi-SSM
+#' carries log(NOM) as a third observation row and produces a NOM
+#' forecast directly from the latent state via the calibrated
+#' offset $\alpha_n$. This bypasses the empirical-pi extrapolation,
+#' which is the principal weakness of the v1.0 pi-based assembly
+#' under regime shifts.
+#'
+#' The headline schema matches [build_nowcast_headline()] so existing
+#' downstream consumers (reports, backtest scoring) work unchanged.
+#'
+#' @param multi_fc Output of [forecast_kalman_multi()] for a v2 fit.
+#' @param cfg Project config.
+#' @return Tibble: `period`, `nom_mean`, `nom_se`, `lower_80`,
+#'   `upper_80`, `lower_95`, `upper_95`. Empty when the input lacks
+#'   a NOM column.
+#' @export
+build_nowcast_headline_from_multi <- function(multi_fc, cfg) {
+  empty <- tibble::tibble(
+    period = as.Date(character()), nom_mean = numeric(),
+    nom_se = numeric(),
+    lower_80 = numeric(), upper_80 = numeric(),
+    lower_95 = numeric(), upper_95 = numeric()
+  )
+  if (is.null(multi_fc) || !nrow(multi_fc) ||
+      !"nom_level" %in% names(multi_fc) ||
+      all(is.na(multi_fc$nom_level))) {
+    return(empty)
+  }
+  ci80 <- cfg$reporting$headline_ci  %||% 0.80
+  ci95 <- cfg$reporting$secondary_ci %||% 0.95
+  z80 <- stats::qnorm(0.5 + ci80 / 2)
+  z95 <- stats::qnorm(0.5 + ci95 / 2)
+
+  multi_fc |>
+    dplyr::filter(.data$category == "total", .data$direction == "arrival",
+                  !is.na(.data$nom_level)) |>
+    dplyr::transmute(
+      .data$period,
+      nom_mean = .data$nom_level,
+      # Log-normal SD: SD[X] = mu * sqrt(exp(sigma^2) - 1)
+      nom_se   = .data$nom_level *
+                 sqrt(pmax(expm1((.data$nom_se_log)^2), 0)),
+      lower_80 = pmax(0, .data$nom_level - z80 * .data$nom_level *
+                     sqrt(pmax(expm1((.data$nom_se_log)^2), 0))),
+      upper_80 = .data$nom_level + z80 * .data$nom_level *
+                 sqrt(pmax(expm1((.data$nom_se_log)^2), 0)),
+      lower_95 = pmax(0, .data$nom_level - z95 * .data$nom_level *
+                     sqrt(pmax(expm1((.data$nom_se_log)^2), 0))),
+      upper_95 = .data$nom_level + z95 * .data$nom_level *
+                 sqrt(pmax(expm1((.data$nom_se_log)^2), 0))
+    )
 }
 
 #' Discretised Gamma lag distribution

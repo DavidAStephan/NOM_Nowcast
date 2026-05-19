@@ -102,6 +102,8 @@ run_backtest <- function(asof_date, db_path, cfg) {
   fits   <- fit_kalman_univariate(panel, cfg)
   fcs_uni <- forecast_kalman_univariate(fits, asof_date, cfg)
   fcs <- fcs_uni
+  fit_multi <- NULL
+  fcs_multi <- tibble::tibble()
   if (isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
     fit_multi <- tryCatch(fit_kalman_multi(panel, cfg),
                           error = function(e) NULL)
@@ -111,14 +113,26 @@ run_backtest <- function(asof_date, db_path, cfg) {
     fcs <- combine_kalman_forecasts(fcs_uni, fcs_multi, cfg)
   }
   cats   <- build_nowcast_categories(fcs, pi_sm, cfg)
-  head   <- build_nowcast_headline(cats, cfg)
+  # Headline: prefer the direct NOM forecast from the trivariate
+  # multi-SSM (no pi); fall back to the pi-based assembly when v2.0
+  # isn't active or the v2.0 forecast is empty.
+  head_v2 <- build_nowcast_headline_from_multi(fcs_multi, cfg)
+  head <- if (nrow(head_v2) > 0L) head_v2 else build_nowcast_headline(cats, cfg)
 
-  # If multi-SSM is enabled we also produce a "kalman_v1" stream from
-  # the pure-univariate forecast so the backtest can quantify the
-  # marginal value of the multivariate observation block.
+  # When multi-SSM is enabled we also produce a "kalman_v1" stream
+  # from the pure-univariate forecast (pi-based) so the backtest can
+  # quantify the marginal value of the multivariate observation block.
   head_v1 <- if (isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
     cats_v1 <- build_nowcast_categories(fcs_uni, pi_sm, cfg)
     build_nowcast_headline(cats_v1, cfg)
+  } else NULL
+  # Also expose the v1.0 (bivariate, pi-based) headline as its own
+  # stream when v2.0 (trivariate, NOM-direct) is active, so the
+  # backtest measures the marginal effect of the NOM observation row
+  # specifically (separately from the visa-grants row).
+  head_pi <- if (isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE) &&
+                 isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
+    build_nowcast_headline(cats, cfg)
   } else NULL
 
   abs_prelim <- benchmark_abs_preliminary(panel, cfg)
@@ -133,7 +147,11 @@ run_backtest <- function(asof_date, db_path, cfg) {
   keeper <- horizons_at(ref_q, horizons)
 
   multi_active <- isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)
-  headline_model <- if (multi_active) "kalman_multi" else "kalman_v1"
+  v2_active    <- multi_active &&
+                  isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE) &&
+                  nrow(head_v2) > 0L
+  headline_model <- if (v2_active) "kalman_multi_v2" else
+                    if (multi_active) "kalman_multi" else "kalman_v1"
 
   rows <- list(
     head |>
@@ -156,6 +174,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
     rows <- c(rows, list(
       head_v1 |>
         dplyr::mutate(model = "kalman_v1", category = "total") |>
+        dplyr::semi_join(keeper, by = "period")
+    ))
+  }
+  if (v2_active && !is.null(head_pi)) {
+    rows <- c(rows, list(
+      head_pi |>
+        dplyr::mutate(model = "kalman_multi_pi", category = "total") |>
         dplyr::semi_join(keeper, by = "period")
     ))
   }

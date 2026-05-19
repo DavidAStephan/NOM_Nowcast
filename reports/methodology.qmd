@@ -193,14 +193,47 @@ forecast), where the Phase 1 Kalman has no direct evidence about
 recent flows. At h<0 OAD is already observed and the extra
 observation row only adds noise to the smoothed level estimate.
 
-### Open work for v2.0
+### v2.0 — NOM as a third observation row
 
+v2.0 extends the bivariate model with a third observation row carrying
+ABS NOM itself:
+
+$$
+y_3(t) = \log\bigl(1 + \mathrm{NOM}_t\bigr) - \alpha_n = \mu_t + \varepsilon^3_t
+$$
+
+where $\alpha_n$ is calibrated as the empirical mean log-gap between
+log NOM and log OAD long-term arrivals. The headline NOM forecast
+comes directly from the latent state via $\mathrm{NOM}_t = \exp(\mu_t
++ \alpha_n) - 1$, bypassing the empirical-π extrapolation that was
+the principal v1.0 weakness during the 2025 regime shift. MLE
+estimates six variance parameters (three observation, three state).
+
+Backtest performance vs v1.0 on the same 11-quarter pseudo-real-time
+grid:
+
+| Model | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
+|-------|----------:|----------:|---------:|----------:|
+| bridge                          | **21,511** | **25,656** | – | – |
+| **kalman_multi_v2** (NOM block) | **37,523** | **40,745** | 77,699 | 72,793 |
+| kalman_multi_pi (v1.0 bivariate)| 58,861    | 75,848    | 78,622 | 71,303 |
+| kalman_v1 (Phase 1, π-route)    | 55,700    | 59,845    | 78,042 | 77,350 |
+
+v2.0 cuts backcast RMSE by 33-40% vs the v1 Kalman variants. The
+NOM observation row directly anchors the latent state at past
+quarters where ABS has already published. At h=0 / h=+1 NOM is
+unobserved and all Kalmans converge — the operational nowcast
+horizon is the structural limit of the multi-source SSM design.
+
+### Open work for v3.0
+
+- **Time-varying $\alpha_n$.** v2.0 uses a constant offset; modelling
+  it as a slow random walk would let the Kalman distinguish
+  changes in OAD flow from changes in the OAD-to-NOM ratio.
 - **Parametric Gamma lag** instead of the fixed-quarter shift used
-  in v1.0:
+  in v1.0/v2.0:
   $V_{c,t} = \kappa_c \sum_k w_k(\alpha_c, \beta_c) A^*_{c,t+k} + \varepsilon^V_{c,t}$,
-  jointly estimated. Identification needs careful initial-condition
-  handling; the scaffold is in
-  [R/models/kalman_multi.R](../R/models/kalman_multi.R).
+  jointly estimated.
 - **True quarterly disaggregation** of DHA visa grants instead of
   equal-weight broadcast across FY quarters.
 - **Student enrolments block** on the student-category sub-fit.

@@ -121,8 +121,17 @@ default:
       # to the univariate Phase 1 Kalman for the total category.
       enabled: true
       visa_lead_quarters: 1
+      # v2.0: add log(NOM) as a third observation row. The Kalman then
+      # produces a NOM forecast directly via the calibrated alpha_n
+      # offset, bypassing the empirical-pi extrapolation. Headline
+      # uses the multi-SSM NOM forecast when this is TRUE.
+      include_nom: true
     kalman:
-      seasonal_period: 12
+      # Seasonal period at the quarterly modelling frequency. 4 = annual
+      # seasonality in quarters. The legacy default of 12 (a monthly
+      # seasonal applied to quarterly data) is over-parameterised on a
+      # 200-obs panel and causes the multi-SSM optimiser to collapse.
+      seasonal_period: 4
       include_ar1_irregular: true
       categories_to_fit: ~     # NULL => all
       # Trend specification used in the state equation:

@@ -113,33 +113,48 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
-## Phase 2 v1.0 — multivariate Kalman with visa-grants block
+## Phase 2 v2.0 — trivariate Kalman with NOM observation block
 
-The Kalman now sees the visa-grants leading indicator as a second
-observation row on the latent log-arrivals state. Two observations
-(OAD long-term arrivals, lagged visa grants) share a common trend
-$\mu_t$; OAD additionally loads on a quarterly dummy seasonal. See
-[R/models/kalman_multi.R](R/models/kalman_multi.R) and methodology
-Section 6 for the spec.
+The Kalman now sees three observations on a shared latent
+log-arrivals state $\mu_t$: OAD long-term arrivals, lagged DHA visa
+grants, and ABS NOM itself. NOM observations enter as
+$y_3(t) = \log(1+\mathrm{NOM}_t) - \alpha_n$ where $\alpha_n$ is the
+empirical long-run mean log-gap between NOM and arrivals. The headline
+NOM forecast comes directly from the multi-SSM via the inverse
+transform $\exp(\mu_t + \alpha_n) - 1$, bypassing the empirical-π
+extrapolation entirely.
 
 ### Head-to-head backtest (11 quarterly dates, 2023-Q1 → 2025-Q3)
 
 | Model | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
 |-------|----------:|----------:|---------:|----------:|
-| bridge          | **21,511** | **25,656** | – | – |
-| **kalman_multi** (Phase 2 v1.0) | 62,963 | 71,547 | **58,869** | **51,501** |
-| kalman_v1 (Phase 1)             | 57,432 | 60,585 | 78,949 | 74,929 |
-| random walk     | 39,188    | 46,857    | – | – |
-| AR(1)           | 48,150    | –         | – | – |
+| bridge                          | **21,511** | **25,656** | – | – |
+| **kalman_multi_v2** (NOM block) | **37,523** | **40,745** | 77,699 | 72,793 |
+| random walk                     | 39,188    | 46,857    | – | – |
+| AR(1)                           | 48,150    | –         | – | – |
+| kalman_v1 (Phase 1, π-route)    | 55,700    | 59,845    | 78,042 | 77,350 |
+| kalman_multi_pi (v1.0)          | 58,861    | 75,848    | 78,622 | 71,303 |
 
-The multivariate SSM **reduces nowcast RMSE by 25%** and **+1q forecast
-RMSE by 31%** versus the Phase 1 Kalman. On backcasts the simpler
-Phase 1 Kalman wins narrowly — at h<0 OAD is already observed and
-adding noisy visa-grants observations dilutes the signal. The
-bridge regression remains the strongest backcast model.
+v2.0 cuts backcast RMSE by **33-40%** versus the v1 Kalman variants.
+NOM observations directly anchor the latent state at past quarters
+where ABS has already published, sidestepping the regime-shift
+problem the π extrapolation kept hitting. At h=0/+1 NOM is
+unobserved so all Kalmans converge to similar performance — that's
+the territory where a multi-source SSM with leading indicators is
+the only structural way to improve.
 
-Toggle the multivariate path via `models.kalman_multi.enabled` in
+The bridge regression still wins backcasts because it directly fits
+NOM on lagged flows with no log-Gaussian assumption.
+
+Toggle the v2.0 path via `models.kalman_multi.include_nom` in
 `config.yml`.
+
+## Phase 2 v1.0 — multivariate Kalman with visa-grants block
+
+The bivariate ancestor of v2.0: two observations (OAD long-term
+arrivals + lagged visa grants) share a common trend with damped
+slope. The headline NOM forecast still goes through the empirical-π
+route. Retained as a baseline for the v2.0 comparison.
 
 ## Phase 2 v0.5 — what's new
 
