@@ -99,12 +99,39 @@ jobs:
           cat("Need to install:", length(missing), "of",
               length(pkgs), "packages\n")
           if (length(missing)) install.packages(missing)
+          cat("install.packages() returned; checking each package in a fresh R session.\n")
+        shell: Rscript {0}
+
+      # New R session for the verify step — `install.packages()` with
+      # Ncpus > 1 occasionally leaves state inconsistent inside the
+      # parent process. A fresh session re-reads each package's
+      # DESCRIPTION and namespace cleanly. Prints the actual onLoad
+      # error if a load fails (the previous "Failed to install"
+      # message hid the real cause).
+      - name: Verify R packages load
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          pkgs <- c(
+            "config", "DBI", "dplyr", "duckdb", "fixest", "fs",
+            "ggplot2", "glue", "gt", "httr2", "jsonlite", "KFAS",
+            "lubridate", "purrr", "quarto", "readabs", "readr", "readxl",
+            "rvest", "scales", "stringr", "tarchetypes", "targets",
+            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass"
+          )
+          bad <- character()
           for (p in pkgs) {
-            if (!requireNamespace(p, quietly = TRUE)) {
-              stop("Failed to install: ", p)
+            err <- tryCatch({
+              loadNamespace(p); NULL
+            }, error = function(e) conditionMessage(e))
+            if (!is.null(err)) {
+              cat(sprintf("FAIL %-15s : %s\n", p, err))
+              bad <- c(bad, p)
+            } else {
+              cat(sprintf("ok   %s\n", p))
             }
           }
-          cat("All packages installed.\n")
+          if (length(bad)) stop("Packages failed to load: ",
+                                paste(bad, collapse = ", "))
         shell: Rscript {0}
 
       - name: Run pipeline (fetch data, fit models, populate targets cache)
