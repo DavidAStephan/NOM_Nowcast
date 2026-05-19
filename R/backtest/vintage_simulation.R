@@ -105,7 +105,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
   fit_multi <- NULL
   fcs_multi <- tibble::tibble()
   if (isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
-    fit_multi <- tryCatch(fit_kalman_multi(panel, cfg),
+    # Don't re-run the v5 Gamma grid search inside each backtest
+    # branch — at ~60s per branch × ~60 quarters it blows the
+    # workflow timeout. The production fit (in the main pipeline)
+    # already searched; reuse its alpha/beta defaults from cfg.
+    cfg_bt <- cfg
+    cfg_bt$models$kalman_multi$gamma_lag$grid_search <- FALSE
+    fit_multi <- tryCatch(fit_kalman_multi(panel, cfg_bt),
                           error = function(e) NULL)
     fcs_multi <- if (is.null(fit_multi)) tibble::tibble()
                  else tryCatch(forecast_kalman_multi(fit_multi, asof_date, cfg),
