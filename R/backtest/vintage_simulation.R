@@ -193,8 +193,20 @@ run_backtest <- function(asof_date, db_path, cfg) {
 #' Fall back to current source data when the vintage store has none
 #' for the requested as-of date. Returns a tibble in the same schema
 #' [vintages_read_asof()] would emit.
+#'
+#' Session-cached: each `source` is fetched at most once per R session,
+#' regardless of how many backtest dates call into it. Without this,
+#' a flaky endpoint (e.g. education.gov.au returning HTTP/2 framing
+#' errors) burns the full retry-with-backoff chain on every branch of
+#' the `pattern = map(backtest_dates)` target — that's how CI ran out
+#' the 45-min job timeout.
 #' @keywords internal
+.pseudo_vintage_cache <- new.env(parent = emptyenv())
+
 pseudo_vintage_read <- function(cfg, source) {
+  if (exists(source, envir = .pseudo_vintage_cache, inherits = FALSE)) {
+    return(get(source, envir = .pseudo_vintage_cache, inherits = FALSE))
+  }
   fetched <- switch(source,
     oad         = fetch_oad(cfg, Sys.Date()),
     nom         = fetch_nom(cfg, Sys.Date()),
@@ -202,10 +214,9 @@ pseudo_vintage_read <- function(cfg, source) {
     students    = fetch_student_data(cfg, Sys.Date()),
     tibble::tibble()
   )
-  if (!nrow(fetched)) return(tibble::tibble())
-  # Coerce to the vintage-store schema (period, period_unit, value,
-  # metadata + the original rich columns so reenrich is a no-op).
-  fetched
+  out <- if (!nrow(fetched)) tibble::tibble() else fetched
+  assign(source, out, envir = .pseudo_vintage_cache)
+  out
 }
 
 #' @keywords internal
