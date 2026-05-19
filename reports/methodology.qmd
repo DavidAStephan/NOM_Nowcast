@@ -111,14 +111,14 @@ with category-level uncertainty propagated by the delta method,
 ignoring the (small at quarterly aggregation) covariance between
 arrivals and departures.
 
-## Phase 2 — multi-source state-space (v0.5)
+## Phase 2 — multi-source state-space
 
-### What's wired up
+### v0.5 building blocks
 
-Phase 2 v0.5 extends the pipeline along three dimensions:
+Three pieces landed first and underpin everything else in Phase 2:
 
 1. **Damped trend Kalman.** The default trend in
-   `fit_kalman_univariate()` is now a damped local linear specification
+   `fit_kalman_univariate()` is a damped local-linear specification
    $\mu_t = \mu_{t-1} + \delta_{t-1} + u_t$,
    $\delta_t = \phi\,\delta_{t-1} + v_t$ with $\phi \approx 0.85$, so
    out-of-sample slope decays toward zero. The standard local-linear
@@ -129,34 +129,83 @@ Phase 2 v0.5 extends the pipeline along three dimensions:
    at [R/ingest/fetch_dha_ckan.R](../R/ingest/fetch_dha_ckan.R) pulls
    the BP00 visa-program reports from data.gov.au. These are annual
    financial-year pivots; the panel builder broadcasts each annual
-   value evenly across the four quarters of the FY (an obvious
-   simplification — true quarterly disaggregation is Phase 3 work).
+   value evenly across the four quarters of the FY.
 
 3. **Bridge regression with visa-grants signal.** The benchmark in
-   [R/models/bridge_regression.R](../R/models/bridge_regression.R) now
-   fits
+   [R/models/bridge_regression.R](../R/models/bridge_regression.R) fits
    $$
    \mathrm{NOM}_{q} = \alpha + \sum_{k=0}^{K} \beta_k\,A^{OAD,LT}_{q-k} + \sum_{k=0}^{K} \gamma_k\,V_{q-k} + \varepsilon_q
    $$
-   at the aggregate (`category == "total"`) level. With $K=4$, in-sample
-   $R^2 \approx 0.87$ on the latest live data.
+   at the aggregate (`category == "total"`) level. With $K=4$,
+   in-sample $R^2 \approx 0.87$.
 
-### Original target specification (Phase 2 v1.0 — open work)
+### v1.0 — multivariate state-space (kalman_multi)
 
-The full Phase 2 design called for a multivariate state-space model
-with a parametric Gamma lag from latent arrivals to visa grants:
+The Kalman now operates on a bivariate observation
+$y_t = (y_1, y_2)^\top$:
 
 $$
-V_{c,t} = \kappa_c \sum_{k=0}^{K_c} w_{c,k}(\alpha_c, \beta_c)\, A^*_{c,t+k} + \varepsilon^V_{c,t}
+\begin{aligned}
+y_1(t) &= \log\bigl(1 + A^{OAD,LT}_t\bigr) \\
+y_2(t) &= \log\bigl(1 + V_{t-\ell}\bigr) - \alpha
+\end{aligned}
 $$
 
-and a fixed-lag student-enrolments block. Joint MLE in `{KFAS}` is
-feasible but requires substantial care with identification and
-initialisation. The scaffold remains at
-[R/models/kalman_multi.R](../R/models/kalman_multi.R); the bridge
-regression captures the headline information value of visa grants
-without the multivariate state machinery, and the headline backtest
-shows it materially beats the Kalman on backcasts (see Section 8).
+where $\ell$ is the (fixed, configurable) visa-grants-to-arrivals lead
+in quarters and $\alpha$ is calibrated as the empirical mean of
+$\log(1+V_{\cdot-\ell}) - \log(1+A^{OAD,LT})$ over quarters where
+both series are present. Both observations load on a single common
+log-arrivals state:
+
+$$
+\begin{aligned}
+y_1(t) &= \mu_t + \gamma_t + \varepsilon^1_t \\
+y_2(t) &= \mu_t + \varepsilon^2_t \\
+\mu_t &= \mu_{t-1} + \delta_{t-1} + u_t,\quad
+\delta_t = \phi \delta_{t-1} + v_t \\
+\gamma_t &= -\sum_{s=1}^{3} \gamma_{t-s} + w_t
+\end{aligned}
+$$
+
+The seasonal $\gamma_t$ loads on the OAD row only (visa grants are
+broadcast as annual FY totals across quarters in v0.5 and so carry
+no within-year seasonal signal). MLE estimates the five variance
+parameters $\sigma^2_{\varepsilon_1}, \sigma^2_{\varepsilon_2},
+\sigma^2_u, \sigma^2_v, \sigma^2_w$.
+
+For the "total" `category` and `arrival` direction, the headline
+nowcast uses this multivariate fit; everything else (per-visa-category
+arrivals, every departure) keeps the univariate Phase 1 Kalman.
+
+**Pseudo-real-time backtest, 11 quarterly dates 2023-Q1 → 2025-Q3**:
+
+| Model        | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
+|--------------|----------:|----------:|---------:|----------:|
+| bridge       | **21,511** | **25,656** | – | – |
+| kalman_multi (v1.0) | 62,963 | 71,547 | **58,869** | **51,501** |
+| kalman_v1 (Phase 1) | 57,432 | 60,585 | 78,949 | 74,929 |
+| random walk  | 39,188    | 46,857    | – | – |
+| AR(1)        | 48,150    | –         | – | – |
+
+The lift from adding the visa-grants observation block is concentrated
+at the operationally important horizons (h=0 nowcast and h=+1
+forecast), where the Phase 1 Kalman has no direct evidence about
+recent flows. At h<0 OAD is already observed and the extra
+observation row only adds noise to the smoothed level estimate.
+
+### Open work for v2.0
+
+- **Parametric Gamma lag** instead of the fixed-quarter shift used
+  in v1.0:
+  $V_{c,t} = \kappa_c \sum_k w_k(\alpha_c, \beta_c) A^*_{c,t+k} + \varepsilon^V_{c,t}$,
+  jointly estimated. Identification needs careful initial-condition
+  handling; the scaffold is in
+  [R/models/kalman_multi.R](../R/models/kalman_multi.R).
+- **True quarterly disaggregation** of DHA visa grants instead of
+  equal-weight broadcast across FY quarters.
+- **Student enrolments block** on the student-category sub-fit.
+- **Cross-category partial pooling** of the trend-innovation
+  variances $\sigma^2_{u,c}$.
 
 ## Phase 3 — Bayesian hierarchical model (scaffolded)
 

@@ -73,7 +73,20 @@ list(
 
   # ----------------------------------------------------------------- Phase 1 Kalman
   tar_target(kalman_fits,       fit_kalman_univariate(panel_quarterly, cfg_target)),
-  tar_target(kalman_forecasts,  forecast_kalman_univariate(kalman_fits, asof_date, cfg_target)),
+  tar_target(kalman_forecasts_uni,
+             forecast_kalman_univariate(kalman_fits, asof_date, cfg_target)),
+
+  # ----------------------------------------------------------------- Phase 2 Kalman (multi-source)
+  tar_target(kalman_multi_fit,  fit_kalman_multi(panel_quarterly, cfg_target)),
+  tar_target(kalman_multi_forecasts,
+             forecast_kalman_multi(kalman_multi_fit, asof_date, cfg_target)),
+
+  # Combined headline forecast: multivariate arrivals for total +
+  # univariate for everything else.
+  tar_target(kalman_forecasts,
+             combine_kalman_forecasts(kalman_forecasts_uni,
+                                      kalman_multi_forecasts,
+                                      cfg_target)),
 
   # ----------------------------------------------------------------- nowcast
   tar_target(nowcast_categories, build_nowcast_categories(kalman_forecasts, pi_smoothed, cfg_target)),

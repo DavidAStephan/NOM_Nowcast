@@ -115,6 +115,12 @@ default:
 
   # ----- Modelling -----
   models:
+    kalman_multi:
+      # Phase 2 v1.0 multivariate SSM (OAD + visa grants on a shared
+      # latent log-arrivals state). Set `enabled: false` to fall back
+      # to the univariate Phase 1 Kalman for the total category.
+      enabled: true
+      visa_lead_quarters: 1
     kalman:
       seasonal_period: 12
       include_ar1_irregular: true

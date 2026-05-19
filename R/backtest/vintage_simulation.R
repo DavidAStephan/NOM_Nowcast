@@ -100,9 +100,26 @@ run_backtest <- function(asof_date, db_path, cfg) {
   pi_emp <- estimate_pi_empirical(panel, cfg)
   pi_sm  <- smooth_pi(pi_emp, cfg)
   fits   <- fit_kalman_univariate(panel, cfg)
-  fcs    <- forecast_kalman_univariate(fits, asof_date, cfg)
+  fcs_uni <- forecast_kalman_univariate(fits, asof_date, cfg)
+  fcs <- fcs_uni
+  if (isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
+    fit_multi <- tryCatch(fit_kalman_multi(panel, cfg),
+                          error = function(e) NULL)
+    fcs_multi <- if (is.null(fit_multi)) tibble::tibble()
+                 else tryCatch(forecast_kalman_multi(fit_multi, asof_date, cfg),
+                               error = function(e) tibble::tibble())
+    fcs <- combine_kalman_forecasts(fcs_uni, fcs_multi, cfg)
+  }
   cats   <- build_nowcast_categories(fcs, pi_sm, cfg)
   head   <- build_nowcast_headline(cats, cfg)
+
+  # If multi-SSM is enabled we also produce a "kalman_v1" stream from
+  # the pure-univariate forecast so the backtest can quantify the
+  # marginal value of the multivariate observation block.
+  head_v1 <- if (isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)) {
+    cats_v1 <- build_nowcast_categories(fcs_uni, pi_sm, cfg)
+    build_nowcast_headline(cats_v1, cfg)
+  } else NULL
 
   abs_prelim <- benchmark_abs_preliminary(panel, cfg)
   rw         <- benchmark_random_walk(panel, cfg)
@@ -115,13 +132,16 @@ run_backtest <- function(asof_date, db_path, cfg) {
 
   keeper <- horizons_at(ref_q, horizons)
 
-  dplyr::bind_rows(
+  multi_active <- isTRUE(cfg$models$kalman_multi$enabled %||% TRUE)
+  headline_model <- if (multi_active) "kalman_multi" else "kalman_v1"
+
+  rows <- list(
     head |>
-      dplyr::mutate(model = "kalman_v1", category = "total") |>
+      dplyr::mutate(model = headline_model, category = "total") |>
       dplyr::semi_join(keeper, by = "period"),
     cats |>
       dplyr::filter(.data$category != "total") |>
-      dplyr::mutate(model = "kalman_v1") |>
+      dplyr::mutate(model = headline_model) |>
       dplyr::semi_join(keeper, by = "period"),
     abs_prelim   |> dplyr::semi_join(keeper, by = "period") |>
                     dplyr::mutate(model = "abs_preliminary"),
@@ -131,7 +151,16 @@ run_backtest <- function(asof_date, db_path, cfg) {
                     dplyr::mutate(model = "ar1"),
     bridge_fc    |> dplyr::semi_join(keeper, by = "period") |>
                     dplyr::mutate(model = "bridge")
-  ) |>
+  )
+  if (multi_active && !is.null(head_v1)) {
+    rows <- c(rows, list(
+      head_v1 |>
+        dplyr::mutate(model = "kalman_v1", category = "total") |>
+        dplyr::semi_join(keeper, by = "period")
+    ))
+  }
+
+  dplyr::bind_rows(rows) |>
     dplyr::mutate(asof_date = asof_date,
                   horizon   = quarters_between(.data$period, ref_q))
 }

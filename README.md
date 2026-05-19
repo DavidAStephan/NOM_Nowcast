@@ -113,6 +113,34 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 2 v1.0 — multivariate Kalman with visa-grants block
+
+The Kalman now sees the visa-grants leading indicator as a second
+observation row on the latent log-arrivals state. Two observations
+(OAD long-term arrivals, lagged visa grants) share a common trend
+$\mu_t$; OAD additionally loads on a quarterly dummy seasonal. See
+[R/models/kalman_multi.R](R/models/kalman_multi.R) and methodology
+Section 6 for the spec.
+
+### Head-to-head backtest (11 quarterly dates, 2023-Q1 → 2025-Q3)
+
+| Model | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
+|-------|----------:|----------:|---------:|----------:|
+| bridge          | **21,511** | **25,656** | – | – |
+| **kalman_multi** (Phase 2 v1.0) | 62,963 | 71,547 | **58,869** | **51,501** |
+| kalman_v1 (Phase 1)             | 57,432 | 60,585 | 78,949 | 74,929 |
+| random walk     | 39,188    | 46,857    | – | – |
+| AR(1)           | 48,150    | –         | – | – |
+
+The multivariate SSM **reduces nowcast RMSE by 25%** and **+1q forecast
+RMSE by 31%** versus the Phase 1 Kalman. On backcasts the simpler
+Phase 1 Kalman wins narrowly — at h<0 OAD is already observed and
+adding noisy visa-grants observations dilutes the signal. The
+bridge regression remains the strongest backcast model.
+
+Toggle the multivariate path via `models.kalman_multi.enabled` in
+`config.yml`.
+
 ## Phase 2 v0.5 — what's new
 
 - **Real DHA visa-grants data via data.gov.au CKAN.** The fetcher

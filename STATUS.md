@@ -1,9 +1,10 @@
 # nomnowcast — session status
 
-**Last touched:** 2026-05-18
+**Last touched:** 2026-05-19
 **Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
-**Latest commit:** `b717c3a` — Phase 2 v0.5
+**Latest commit:** Phase 2 v1.0 (multivariate Kalman with visa-grants block)
 **R version pinned:** 4.5.3 via `renv.lock` (123 packages)
+**Tests:** 59 passing (35 baseline + 24 multi-SSM)
 
 ## TL;DR — what you have
 
@@ -15,16 +16,18 @@ pass.
 **Headline backtest result** (pseudo-real-time, 11 quarterly dates,
 2023-Q1 → 2025-Q3, target = ABS quarterly NOM total):
 
-| Model                | h=-2 RMSE | h=-1 RMSE | h=0 RMSE |
-|----------------------|----------:|----------:|---------:|
-| **bridge** (OAD + visa grants) | **21,511** | **25,656** | (NA) |
-| random walk          | 39,188    | 46,857    | (NA)     |
-| AR(1)                | 48,150    | –         | –        |
-| kalman_v1 (damped)   | 57,432    | 60,585    | 78,949   |
+| Model                          | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
+|--------------------------------|----------:|----------:|---------:|----------:|
+| **bridge** (OAD + visa grants) | **21,511** | **25,656** | – | – |
+| **kalman_multi** (Phase 2 v1.0) | 62,963 | 71,547 | **58,869** | **51,501** |
+| kalman_v1 (Phase 1, damped)    | 57,432    | 60,585    | 78,949   | 74,929    |
+| random walk                    | 39,188    | 46,857    | –        | –         |
+| AR(1)                          | 48,150    | –         | –        | –         |
 
-The bridge regression with visa-grants as a leading indicator beats
-the Kalman by ~2.5× on backcasts. This is the result that motivates
-Phase 2 v1.0 (give the Kalman the visa-grants signal too).
+Phase 2 v1.0 reduces nowcast RMSE by **25%** and 1q-forecast RMSE by
+**31%** over the Phase 1 Kalman. Bridge regression still wins
+backcasts (h<0), where OAD is already observed and the extra
+multivariate observation row only adds noise.
 
 In-sample headline performance against ABS NOM, latest 8 completed
 quarters: errors within ±13%. Out-of-sample 2025: model over-shoots
@@ -38,7 +41,8 @@ could adapt (no leading indicators in the v0.5 Kalman).
 | **Phase 0** scaffold | ✅ done | DESCRIPTION, renv, _targets.R, config.yml, dirs |
 | **Phase 1** univariate Kalman | ✅ done + calibrated against live ABS |
 | **Phase 2 v0.5** | ✅ done | damped trend, CKAN visa grants, bridge regression, real backtest |
-| **Phase 2 v1.0** | ⏳ open | true multivariate SSM with Gamma-lag visa grants in KFAS |
+| **Phase 2 v1.0** | ✅ done | bivariate KFAS SSM, fixed-quarter visa-grants lead, +25% nowcast lift |
+| **Phase 2 v2.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block |
 | **Phase 3** | ⏳ scaffolded | `stan/hierarchical_nom.stan` compiles but not calibrated |
 | **Phase 4** | ✅ effectively done | bridge regression is the benchmark |
 
@@ -193,18 +197,17 @@ passes `.envir = parent.frame()` explicitly — preserve that pattern.
 
 ### High-impact next steps
 
-1. **Implement true Phase 2 v1.0 multivariate SSM in KFAS.**
-   The bridge regression already shows visa-grants buys ~2.5× RMSE
-   reduction on backcasts. Wiring that signal into the Kalman state
-   equation (so the Kalman also benefits) is the natural next step.
-   Spec already in `stan/hierarchical_nom.stan` and the methodology
-   doc. The Gamma-lag parametric form
-   $V_{c,t} = \kappa_c \sum_k w_k(\alpha, \beta) A^*_{c,t+k} + \varepsilon$
-   is the headline missing piece.
-   - File: [R/models/kalman_multi.R](R/models/kalman_multi.R) (scaffold)
-   - File: [R/models/kalman_univariate.R](R/models/kalman_univariate.R)
-     (turn the current `SSModel(y ~ ...)` into multivariate with an
-     OAD observation row and a visa-grants observation row)
+1. **Phase 2 v2.0 — parametric Gamma lag.** The v1.0 multivariate SSM
+   uses a fixed single-quarter lead from visa grants to arrivals.
+   Replacing it with a discretised Gamma(α, β) lag distribution
+   jointly estimated with the rest of the model is the natural
+   next step. The `gamma_lag_weights()` helper in
+   [R/models/kalman_multi.R](R/models/kalman_multi.R) is already
+   there; what's missing is the time-varying Z matrix that loads
+   a weighted sum of past latent states onto each visa-grants
+   observation. Identification needs careful initial-state handling
+   (the diffuse priors aren't enough when both lag and intercept
+   are free).
 
 2. **Quarterly disaggregation of DHA grants.** Currently the annual
    FY pivots are broadcast as equal quarters. The pivot files'
