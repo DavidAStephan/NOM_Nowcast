@@ -62,6 +62,7 @@ fit_kalman_multi <- function(panel, cfg) {
   damping <- cfg$models$kalman$damping_phi %||% 0.85
   seasonal_period <- cfg$models$kalman$seasonal_period %||% 4L
   include_nom <- isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE)
+  nom_alpha_tv <- isTRUE(cfg$models$kalman_multi$nom_alpha_time_varying %||% TRUE)
 
   # Visa-grants signal for the total category: sum across visa
   # categories in the panel (the "total" row itself doesn't carry
@@ -100,18 +101,29 @@ fit_kalman_multi <- function(panel, cfg) {
   ssm <- build_multi_ssmodel(y_mat,
                              phi             = damping,
                              seasonal_period = seasonal_period,
-                             include_nom     = include_nom)
+                             include_nom     = include_nom,
+                             nom_alpha_time_varying = nom_alpha_tv && include_nom)
   # Free variance parameters:
-  #   bivariate  (no NOM): 5 = H[1,1] + H[2,2] + Q[1,1..3,3]
-  #   trivariate (w/ NOM): 6 = H[1,1] + H[2,2] + H[3,3] + Q[1,1..3,3]
+  #   bivariate  (no NOM):          5 = 2 H + 3 Q
+  #   trivariate static-offset:     6 = 3 H + 3 Q
+  #   trivariate time-varying alpha 7 = 3 H + 3 Q + Q[beta_n]
   #
   # Initial values for the log-variance hyperparameters. With three
   # slope-1 observations on a shared level state the optimiser is
   # prone to collapse to an all-zero variance corner; seeding the
   # state-innovation variances at log(0.01)=-4.6 and the observation
-  # variances at log(0.1)=-2.3 keeps it in the interior.
-  inits <- if (include_nom) c(-2.3, -2.3, -2.3, -4.6, -4.6, -4.6)
-           else             c(-2.3, -2.3,        -4.6, -4.6, -4.6)
+  # variances at log(0.1)=-2.3 keeps it in the interior. beta_n's
+  # innovation should be tiny (log(1e-4) = -9.2) to keep it slow.
+  inits <- if (include_nom && nom_alpha_tv) {
+    # v3 path: H[3,3] AND Q[beta_n] are both fixed (in the SSModel
+    # itself), so we only estimate 5 params: H[1,1], H[2,2] and the
+    # 3 state-innovation variances Q[level], Q[slope], Q[seasonal].
+    c(-2.3, -2.3, -4.6, -4.6, -4.6)
+  } else if (include_nom) {
+    c(-2.3, -2.3, -2.3, -4.6, -4.6, -4.6)
+  } else {
+    c(-2.3, -2.3,        -4.6, -4.6, -4.6)
+  }
   fit <- tryCatch(
     KFAS::fitSSM(ssm, inits = inits, method = "BFGS"),
     error = function(e) e
@@ -126,18 +138,22 @@ fit_kalman_multi <- function(panel, cfg) {
                    filtering = c("state", "mean"),
                    smoothing = c("state", "mean", "disturbance"))
 
+  kind <- if (!include_nom) "kalman_multi_v1"
+          else if (nom_alpha_tv) "kalman_multi_v3"
+          else "kalman_multi_v2"
   structure(
     list(
-      kfs            = kfs,
-      model          = fit$model,
-      periods        = joined$period,
-      y              = y_mat,
-      alpha_v        = alpha_v,
-      alpha_n        = alpha_n,
-      include_nom    = include_nom,
-      lead_quarters  = lead_q,
-      transformation = "log1p",
-      kind           = if (include_nom) "kalman_multi_v2" else "kalman_multi_v1"
+      kfs              = kfs,
+      model            = fit$model,
+      periods          = joined$period,
+      y                = y_mat,
+      alpha_v          = alpha_v,
+      alpha_n          = alpha_n,
+      include_nom      = include_nom,
+      nom_alpha_tv     = nom_alpha_tv && include_nom,
+      lead_quarters    = lead_q,
+      transformation   = "log1p",
+      kind             = kind
     ),
     class = "kalman_multi_fit"
   )
@@ -171,13 +187,19 @@ calibrate_offset <- function(y_target, y_reference, min_overlap = 8L) {
 #'
 #' @keywords internal
 build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
-                                include_nom = FALSE) {
-  # State layout: [level, slope, seasonal_lag_0, ..., seasonal_lag_(S-2)]
-  # with a damped slope (phi). The dummy seasonal is implemented as a
-  # companion form whose first row is -sum(other lags).
+                                include_nom = FALSE,
+                                nom_alpha_time_varying = FALSE) {
+  # State layout (v3.0 when nom_alpha_time_varying = TRUE):
+  #   [level, slope, seasonal_lag_0 ... seasonal_lag_(S-2), beta_n]
+  # where beta_n is a slow random walk that captures the time-varying
+  # log gap between NOM and the latent arrivals state. Observation 3
+  # (NOM) loads on both `level` and `beta_n`. In static-offset mode
+  # (v2.0, default) beta_n is absent and the offset is subtracted
+  # outside the Kalman in fit_kalman_multi().
   m_trend <- 2L
   m_seas  <- seasonal_period - 1L
-  m       <- m_trend + m_seas
+  m_alpha <- if (include_nom && nom_alpha_time_varying) 1L else 0L
+  m       <- m_trend + m_seas + m_alpha
   p       <- if (include_nom) 3L else 2L
 
   T_mat <- matrix(0, m, m)
@@ -191,30 +213,59 @@ build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
       T_mat[m_trend + k, m_trend + k - 1L] <- 1
     }
   }
+  if (m_alpha == 1L) {
+    T_mat[m, m] <- 1                         # beta_n random walk
+  }
 
-  # Observation matrix Z (p x m). All rows load on the level state
-  # with slope 1 (visa grants and NOM are pre-demeaned). OAD
-  # additionally loads on the first seasonal lag.
   Z_mat <- matrix(0, p, m)
-  Z_mat[1, 1] <- 1                        # level -> arrivals
-  Z_mat[1, m_trend + 1L] <- 1             # seasonal -> arrivals
-  Z_mat[2, 1] <- 1                        # level -> visa grants
-  if (include_nom) Z_mat[3, 1] <- 1       # level -> NOM
+  Z_mat[1, 1] <- 1                           # level -> arrivals
+  Z_mat[1, m_trend + 1L] <- 1                # seasonal -> arrivals
+  Z_mat[2, 1] <- 1                           # level -> visa grants
+  if (include_nom) {
+    Z_mat[3, 1] <- 1                         # level -> NOM
+    if (m_alpha == 1L) Z_mat[3, m] <- 1      # beta_n -> NOM
+  }
 
-  R_mat <- matrix(0, m, 3L)
+  # Innovations: trend (2), seasonal (1), and optionally beta_n (1).
+  # beta_n's innovation variance is FIXED rather than MLE-estimated;
+  # if left free, the optimiser either lets it absorb every quarter's
+  # NOM noise (degenerate perfect fit) or shrinks it to 0 and uses
+  # H[3,3] >> 1 to "ignore" NOM. SD ≈ 0.1 per quarter (Q = 0.01) lets
+  # the OAD-to-NOM log ratio drift ~0.5 over a couple of years —
+  # roughly the magnitude observed in the 2020-2025 regime shift.
+  n_innov <- 3L + m_alpha
+  R_mat <- matrix(0, m, n_innov)
   R_mat[1, 1] <- 1
   R_mat[2, 2] <- 1
   R_mat[m_trend + 1L, 3L] <- 1
-  Q_mat <- diag(c(NA_real_, NA_real_, NA_real_))   # MLE-estimated
+  if (m_alpha == 1L) R_mat[m, 4L] <- 1
+  Q_diag <- if (m_alpha == 1L) c(NA_real_, NA_real_, NA_real_, 0.01)
+            else               c(NA_real_, NA_real_, NA_real_)
+  Q_mat <- diag(Q_diag)
 
-  H_mat <- diag(rep(NA_real_, p))                  # MLE-estimated
+  # H matrix: observation variances. In v3 (time-varying alpha_n), fix
+  # H[3,3] to a realistic NOM measurement noise (SD ~0.07 ~ 7% on log
+  # scale, the rough magnitude of ABS NOM revisions). Otherwise the
+  # MLE inflates it to "ignore" NOM and beta_n never moves.
+  fix_h3 <- isTRUE(p == 3L) &&
+            isTRUE(m_alpha == 1L)
+  H_diag <- if (fix_h3) c(NA_real_, NA_real_, 0.005)
+            else        rep(NA_real_, p)
+  H_mat <- diag(H_diag)
 
   P1    <- diag(rep(0, m))
-  P1inf <- diag(c(1, 1, rep(0, m_seas)))
-  for (j in (m_trend + 1L):m) P1[j, j] <- 1
+  # Diffuse init on level + slope + beta_n (so beta_n is free to
+  # learn its initial level from the data). Q[beta_n] is tight,
+  # which prevents quarterly noise absorption — together this gives
+  # a slow-drift OAD-to-NOM offset estimator that converges to the
+  # right mean within the first few observable NOM quarters.
+  diff_init <- c(1, 1, rep(0, m_seas), if (m_alpha == 1L) 1 else integer(0))
+  P1inf <- diag(diff_init)
+  for (j in (m_trend + 1L):(m_trend + m_seas)) P1[j, j] <- 1
 
   state_names <- c("level", "slope",
-                   paste0("seasonal_lag_", seq_len(m_seas) - 1L))
+                   paste0("seasonal_lag_", seq_len(m_seas) - 1L),
+                   if (m_alpha == 1L) "beta_n" else character())
 
   SSModel   <- KFAS::SSModel
   SSMcustom <- KFAS::SSMcustom
@@ -276,10 +327,24 @@ forecast_kalman_multi <- function(fit, asof, cfg) {
   smoothed_log <- as.numeric(fit$kfs$muhat[, 1])
   se_log       <- sqrt(pmax(as.numeric(fit$kfs$V_mu[1, 1, ]), 0))
 
+  # When NOM is in the observation block, also pull the smoothed
+  # predicted log-NOM (= mu_t + alpha_n + beta_n_t in v3 / = mu_t
+  # alone in v2 with offset applied below).
+  has_nom_row <- isTRUE(fit$include_nom)
+  if (has_nom_row && dim(fit$kfs$muhat)[2L] >= 3L) {
+    smoothed_nom_log <- as.numeric(fit$kfs$muhat[, 3])
+    se_nom_log       <- sqrt(pmax(as.numeric(fit$kfs$V_mu[3, 3, ]), 0))
+  } else {
+    smoothed_nom_log <- rep(NA_real_, length(periods))
+    se_nom_log       <- rep(NA_real_, length(periods))
+  }
+
   in_sample <- tibble::tibble(
     period           = periods,
     mean_log         = smoothed_log,
     se_log           = se_log,
+    nom_log_smoothed = smoothed_nom_log,
+    nom_se_log_smoothed = se_nom_log,
     forecast_horizon = -seq(length(periods) - 1L, 0L)
   )
 
@@ -302,18 +367,31 @@ forecast_kalman_multi <- function(fit, asof, cfg) {
   out_of_sample <- if (is.null(fc)) {
     tibble::tibble()
   } else {
-    arr <- if (is.list(fc) && !is.null(fc[[1L]])) fc[[1L]] else fc
+    # KFAS::predict returns a *list* of matrices for multivariate
+    # models, one per observation series. fc[[1]] = arrivals (y1);
+    # fc[[3]] = NOM (y3) if present.
+    fc_list <- if (is.list(fc)) fc else list(fc)
+    arr <- fc_list[[1L]]
     last_p <- max(periods)
     future <- seq.Date(
       seq.Date(last_p, by = "3 months", length.out = 2L)[2L],
       by = "quarter", length.out = h_max
     )
+    nom_log_oos <- if (has_nom_row && length(fc_list) >= 3L) {
+      as.numeric(fc_list[[3L]][, "fit"])
+    } else rep(NA_real_, h_max)
+    nom_se_oos <- if (has_nom_row && length(fc_list) >= 3L) {
+      (as.numeric(fc_list[[3L]][, "upr"]) -
+       as.numeric(fc_list[[3L]][, "fit"])) / 1.96
+    } else rep(NA_real_, h_max)
     tibble::tibble(
-      period           = future,
-      mean_log         = as.numeric(arr[, "fit"]),
-      se_log           = (as.numeric(arr[, "upr"]) -
-                          as.numeric(arr[, "fit"])) / 1.96,
-      forecast_horizon = seq_len(h_max)
+      period              = future,
+      mean_log            = as.numeric(arr[, "fit"]),
+      se_log              = (as.numeric(arr[, "upr"]) -
+                             as.numeric(arr[, "fit"])) / 1.96,
+      nom_log_smoothed    = nom_log_oos,
+      nom_se_log_smoothed = nom_se_oos,
+      forecast_horizon    = seq_len(h_max)
     )
   }
 
@@ -322,19 +400,31 @@ forecast_kalman_multi <- function(fit, asof, cfg) {
   out$se_log <- pmin(out$se_log, 1.0, na.rm = FALSE)
   out$mean_level <- expm1(out$mean_log + 0.5 * (out$se_log^2))
 
-  # When NOM is in the observation block, derive a NOM forecast
-  # directly from the latent level state via the calibrated offset
-  # alpha_n. This bypasses the pi-based assembly entirely for the
-  # headline; see [`build_nowcast_headline_from_multi()`].
+  # NOM forecast.
+  #   v2.0 (static offset):    nom_log = mu + alpha_n (constant)
+  #   v3.0 (drift + static):   nom_log = (mu + beta_n) + alpha_n where
+  #                            muhat[, 3] is precisely the demeaned
+  #                            log-NOM signal mu + beta_n.
   if (isTRUE(fit$include_nom %||% FALSE)) {
-    out$nom_log    <- out$mean_log + (fit$alpha_n %||% 0)
-    out$nom_level  <- expm1(out$nom_log + 0.5 * (out$se_log^2))
-    out$nom_se_log <- out$se_log
+    alpha_n_static <- fit$alpha_n %||% 0
+    if (isTRUE(fit$nom_alpha_tv %||% FALSE)) {
+      out$nom_log    <- out$nom_log_smoothed + alpha_n_static
+      out$nom_se_log <- out$nom_se_log_smoothed
+    } else {
+      out$nom_log    <- out$mean_log + alpha_n_static
+      out$nom_se_log <- out$se_log
+    }
+    out$nom_se_log[!is.finite(out$nom_se_log)] <- NA_real_
+    out$nom_se_log <- pmin(out$nom_se_log, 1.0, na.rm = FALSE)
+    out$nom_level  <- expm1(out$nom_log + 0.5 * (out$nom_se_log^2))
   } else {
     out$nom_log    <- NA_real_
     out$nom_level  <- NA_real_
     out$nom_se_log <- NA_real_
   }
+  # Don't surface the internal smoothed helpers further downstream.
+  out$nom_log_smoothed    <- NULL
+  out$nom_se_log_smoothed <- NULL
 
   # The multivariate fit covers only the "total" category and the
   # "arrival" direction. To get a NOM headline via the pi-route, the

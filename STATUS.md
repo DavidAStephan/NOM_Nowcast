@@ -2,10 +2,11 @@
 
 **Last touched:** 2026-05-19
 **Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
-**Latest commit:** Phase 2 v2.0 (trivariate Kalman; NOM as a direct
-  observation row; pi-free headline)
+**Latest commit:** Phase 2 v3.0 exploration (time-varying α_n scaffolded
+  but didn't outperform v2.0; OAD-proportional quarterly visa-grant
+  disaggregation modestly improves backcasts via the π-route)
 **R version pinned:** 4.5.3 via `renv.lock` (123 packages)
-**Tests:** 72 passing
+**Tests:** 76 passing
 
 ## TL;DR — what you have
 
@@ -50,7 +51,8 @@ could adapt (no leading indicators in the v0.5 Kalman).
 | **Phase 2 v0.5** | ✅ done | damped trend, CKAN visa grants, bridge regression, real backtest |
 | **Phase 2 v1.0** | ✅ done | bivariate KFAS SSM, fixed-quarter visa-grants lead |
 | **Phase 2 v2.0** | ✅ done | trivariate SSM, NOM as third observation row, π-free headline, 33-40% backcast lift |
-| **Phase 2 v3.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block, time-varying $\alpha_n$ |
+| **Phase 2 v3.0** | ⚠️ explored | time-varying α_n scaffolded but underperforms v2.0 (weak identification); OAD-proportional visa-grant disaggregation modestly helps π-route backcasts |
+| **Phase 2 v4.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block |
 | **Phase 3** | ⏳ scaffolded | `stan/hierarchical_nom.stan` compiles but not calibrated |
 | **Phase 4** | ✅ effectively done | bridge regression is the benchmark |
 
@@ -203,18 +205,26 @@ passes `.envir = parent.frame()` explicitly — preserve that pattern.
 
 ## Open work — prioritised
 
+### Negative results from v3.0 — preserved for context
+
+- **Time-varying $\alpha_n$ as a random-walk state.** Implemented in
+  [R/models/kalman_multi.R](R/models/kalman_multi.R) behind the
+  `models.kalman_multi.nom_alpha_time_varying` flag (default `false`).
+  The state is weakly identified against the level state on the
+  full ~200-quarter panel; H[3,3] inflates or β_n absorbs all
+  quarterly noise depending on hyperparameter seeding. Several
+  variants tried — diffuse vs informative prior on β_n, fixed vs
+  estimated Q[β_n], fixed vs estimated H[3,3], recent-period
+  α_n calibration — none beat v2.0 cleanly. The scaffold remains in
+  place (with Q[β_n] = 0.01 and H[3,3] fixed at 0.005) for a future
+  attempt that re-frames the identification problem (e.g.
+  hierarchical prior on β_n innovation variance pooled across
+  categories, or a 2-state piecewise-constant α with hard
+  breakpoints at regime-shift dates).
+
 ### High-impact next steps
 
-1. **Time-varying $\alpha_n$.** v2.0 uses a constant offset between
-   $\log\mathrm{NOM}$ and the latent log-arrivals state. That
-   captures the long-run mean but misses the *regime* shifts in π
-   (e.g. 2025's faster NOM contraction vs OAD). Modelling
-   $\alpha_n$ as a slow random walk or GP would let the Kalman
-   distinguish "OAD changed" from "π changed". Implementation: add
-   $\alpha_n$ as an unobserved state component with its own
-   innovation variance.
-
-2. **Phase 2 v3.0 — parametric Gamma lag.** v1.0/v2.0 use a fixed
+1. **Phase 2 v4.0 — parametric Gamma lag.** v1.0/v2.0 use a fixed
    single-quarter lead from visa grants to arrivals. Replacing it
    with a discretised Gamma(α, β) lag distribution jointly estimated
    with the rest of the model is the natural next refinement. The

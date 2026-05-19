@@ -113,6 +113,29 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 2 v3.0 exploration (negative + small positive)
+
+Two extensions to v2.0 were tried in this iteration:
+
+1. **Time-varying $\alpha_n$** — model the OAD-to-NOM log offset as a
+   slow random-walk state (β_n) so the Kalman could adapt to π
+   regime shifts. **Result: underperforms v2.0 across every horizon.**
+   The state is weakly identified against the level on a 200-quarter
+   panel; several reparameterisations (diffuse vs informative β_n
+   prior, fixed vs estimated H[3,3], recent-period α_n calibration)
+   all produced backtest RMSE worse than the static v2.0 baseline.
+   Scaffold retained behind
+   `models.kalman_multi.nom_alpha_time_varying: false` for a future
+   attempt; see STATUS.md for design notes.
+
+2. **OAD-proportional quarterly disaggregation** of FY-annual DHA
+   visa grants. Replaces the equal-quarters broadcast with weights
+   from category-level OAD long-term arrivals within each FY. **Modest
+   improvement**: kalman_multi_pi h=-1 RMSE drops 75,848 → 59,135
+   (-22%); other horizons within ±5%. Defaults to `proportional` via
+   `panel.vg_disagg_strategy`. v2.0 headline (`kalman_multi_v2`)
+   essentially unchanged.
+
 ## Phase 2 v2.0 — trivariate Kalman with NOM observation block
 
 The Kalman now sees three observations on a shared latent

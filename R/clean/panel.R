@@ -26,22 +26,49 @@
 #' @param cfg Project config.
 #' @return Quarterly panel tibble.
 #' @export
-#' Expand a (period = FY-start, value) row into 4 equal-quarter rows
+#' Expand annual (period = FY-start, value) rows into quarterly rows
 #'
-#' Helper used by [build_quarterly_panel()] to handle annual visa-grant
+#' Helper used by [build_quarterly_panel()] for annual visa-grant
 #' inputs. Each FY-start date (1 July YYYY) becomes four quarterly
-#' periods within that FY (Jul, Oct, Jan, Apr), each carrying 1/4 of
-#' the annual value.
+#' periods (Jul, Oct, Jan, Apr).
+#'
+#' Two disaggregation strategies are supported:
+#'
+#'   * **equal** (default fallback): each quarter gets one quarter
+#'     of the annual value.
+#'   * **proportional**: weights derived from a quarterly weighting
+#'     series (typically OAD long-term arrivals for the same visa
+#'     category) are used to allocate the annual total across the
+#'     four quarters of the FY. Within-year seasonality of grants
+#'     then mirrors the seasonality of the underlying flow.
+#'
+#' When `weights_df` is provided but doesn't cover a particular FY's
+#' four quarters with non-zero values, that FY falls back to equal
+#' allocation.
+#'
+#' @param df   Annual data: at minimum columns `period` (FY start)
+#'   and `value`.
+#' @param weights_df Optional quarterly weights tibble with columns
+#'   `period` and `weight` (typically the OAD long-term arrivals
+#'   series for the same visa category).
 #' @keywords internal
-spread_annual_to_quarters <- function(df) {
-  if (!nrow(df)) return(tibble::tibble(period = as.Date(character()),
-                                       value = numeric()))
-  out <- purrr::map_dfr(seq_len(nrow(df)), function(i) {
+spread_annual_to_quarters <- function(df, weights_df = NULL) {
+  if (!nrow(df)) {
+    return(tibble::tibble(period = as.Date(character()), value = numeric()))
+  }
+  purrr::map_dfr(seq_len(nrow(df)), function(i) {
     fy_start <- as.Date(df$period[i])
     qs <- seq.Date(fy_start, by = "3 months", length.out = 4L)
-    tibble::tibble(period = qs, value = df$value[i] / 4)
+    annual <- df$value[i]
+    w <- if (!is.null(weights_df)) {
+      wm <- weights_df$weight[match(qs, weights_df$period)]
+      if (any(!is.na(wm)) && sum(wm, na.rm = TRUE) > 0) {
+        wm[is.na(wm) | wm < 0] <- 0
+        wm / sum(wm)
+      } else rep(0.25, 4L)
+    } else rep(0.25, 4L)
+    tibble::tibble(period = qs, value = annual * w)
   })
-  out
 }
 
 build_quarterly_panel <- function(oad_clean, nom_clean,
@@ -93,9 +120,27 @@ build_quarterly_panel <- function(oad_clean, nom_clean,
     unique(stats::na.omit(visa_grants_clean$period_unit))[1] %||% "month"
   } else "month"
   vg_q <- if (identical(vg_unit, "year")) {
+    # Disaggregation strategy. The "proportional" default uses OAD
+    # long-term arrivals for the same visa category as quarterly
+    # weights within each FY; equal-quarter fallback is used when
+    # OAD weights are missing.
+    strategy <- cfg$panel$vg_disagg_strategy %||% "proportional"
+    oad_weights_by_cat <- if (identical(strategy, "proportional")) {
+      oad_q |>
+        dplyr::select("period", "category",
+                      weight = "oad_lt_arrivals") |>
+        dplyr::filter(!is.na(.data$weight))
+    } else NULL
     visa_grants_clean |>
       dplyr::group_by(.data$category) |>
-      dplyr::group_modify(~ spread_annual_to_quarters(.x)) |>
+      dplyr::group_modify(function(.x, .y) {
+        w <- if (!is.null(oad_weights_by_cat)) {
+          oad_weights_by_cat |>
+            dplyr::filter(.data$category == .y$category) |>
+            dplyr::select("period", "weight")
+        } else NULL
+        spread_annual_to_quarters(.x, w)
+      }) |>
       dplyr::ungroup() |>
       dplyr::rename(visa_grants = "value")
   } else {

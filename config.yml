@@ -77,6 +77,16 @@ default:
     airline_activity_index: "https://www.bitre.gov.au/statistics/aviation"
     publication_lag_days: 60
 
+  # ----- Panel -----
+  panel:
+    # Visa-grant data from data.gov.au CKAN comes at financial-year
+    # frequency; the panel builder spreads it across the four FY
+    # quarters. "proportional" weights each quarter by OAD long-term
+    # arrivals in the same category for that quarter (better within-
+    # year signal). "equal" gives 1/4 to each quarter. Defaults to
+    # proportional.
+    vg_disagg_strategy: "proportional"
+
   # ----- Categories -----
   categories:
     # Canonical taxonomy used downstream. See R/clean/category_map.R for the
@@ -126,6 +136,12 @@ default:
       # offset, bypassing the empirical-pi extrapolation. Headline
       # uses the multi-SSM NOM forecast when this is TRUE.
       include_nom: true
+      # v3.0 explored making alpha_n a slow random-walk state. That
+      # model has weak identification with the level state and the
+      # backtest was worse than v2.0 across every horizon -- so it
+      # remains a config-flagged opt-in. Production stays on v2.0
+      # static alpha. See STATUS.md "Negative results" for context.
+      nom_alpha_time_varying: false
     kalman:
       # Seasonal period at the quarterly modelling frequency. 4 = annual
       # seasonality in quarters. The legacy default of 12 (a monthly
