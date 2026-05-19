@@ -225,7 +225,50 @@ quarters where ABS has already published. At h=0 / h=+1 NOM is
 unobserved and all Kalmans converge — the operational nowcast
 horizon is the structural limit of the multi-source SSM design.
 
-### Open work for v3.0
+### v4.0 — parametric Gamma lag for visa grants
+
+v1.0/v2.0/v3.0 used a fixed single-quarter shift on visa grants:
+$y_2(t) = \log V_{t-1} - \alpha_v$, loading on $\mu_t$. v4.0
+implements the original spec's parametric Gamma lag via state
+augmentation.
+
+The state is extended with K lagged copies of the level state:
+
+$$
+\boldsymbol{\alpha}_t = (\mu_t,\, \delta_t,\, \gamma_t,\, \gamma_{t-1},\, \gamma_{t-2},\, \mu_{t-1},\, \mu_{t-2},\, \dots,\, \mu_{t-K})^\top
+$$
+
+The shift chain is deterministic: $\mu_{t+1\text{-lag-}1} = \mu_t$,
+$\mu_{t+1\text{-lag-}k} = \mu_{t\text{-lag-}(k-1)}$ for $k\geq 2$.
+
+Visa grants are shifted backward by $K$ and the observation row loads
+on the augmented state with Gamma weights:
+
+$$
+y_2(t) = \log V_{t-K} - \alpha_v = w_K\,\mu_t + w_{K-1}\,\mu_{t-1} + \dots + w_0\,\mu_{t-K} + \varepsilon^2_t
+$$
+
+where $w_k = \mathrm{Gamma}(k;\,\alpha,\beta)$ discretised over
+$\{0, 1, \dots, K\}$ and normalised. Defaults: $\alpha=2$, $\beta=1$
+(mode at lag 1q), $K=4$.
+
+Backtest improvement (11 quarterly dates, 2023-Q1 → 2025-Q3):
+
+| Horizon | v2.0 RMSE | v4.0 RMSE | Δ |
+|---------|----------:|----------:|--:|
+| h=-2    | 37,523    | 36,183    | **−3.6%** |
+| h=-1    | 40,745    | 38,330    | **−5.9%** |
+| h=0     | 77,699    | 78,773    | +1.4% |
+| h=+1    | 72,793    | 73,970    | +1.6% |
+
+Backcasts benefit most because multiple quarters of past visa-grants
+observations now anchor the smoother's view of the latent state. At
+the operationally important h=0/h=+1 horizons, the Gamma weights add
+~one extra state-shift's worth of forward-projection uncertainty,
+slightly hurting forecasts. Net positive on the headline use case
+(backcast accuracy matters most for revising NOM history).
+
+### Open work for v5.0
 
 - **Time-varying $\alpha_n$.** v2.0 uses a constant offset; modelling
   it as a slow random walk would let the Kalman distinguish

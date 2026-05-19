@@ -142,6 +142,19 @@ default:
       # remains a config-flagged opt-in. Production stays on v2.0
       # static alpha. See STATUS.md "Negative results" for context.
       nom_alpha_time_varying: false
+      # v4.0 — parametric Gamma lag from visa grants to arrivals.
+      # When enabled, state augments with K lagged copies of the
+      # level state and the visa observation row Z[2,] uses Gamma
+      # weights instead of loading on the current level only.
+      #   alpha, beta: Gamma(shape, rate) parameters
+      #   k_max:       maximum forward lag in quarters
+      # Defaults give mode at lag 1q with a 4q tail (typical
+      # student-visa-grant -> arrival pipeline).
+      gamma_lag:
+        enabled: true
+        alpha: 2.0
+        beta:  1.0
+        k_max: 4
     kalman:
       # Seasonal period at the quarterly modelling frequency. 4 = annual
       # seasonality in quarters. The legacy default of 12 (a monthly

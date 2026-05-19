@@ -2,11 +2,10 @@
 
 **Last touched:** 2026-05-19
 **Repo:** `/Users/davidstephan/Documents/NOM_Nowcast` (git, branch `main`)
-**Latest commit:** Phase 2 v3.0 exploration (time-varying α_n scaffolded
-  but didn't outperform v2.0; OAD-proportional quarterly visa-grant
-  disaggregation modestly improves backcasts via the π-route)
+**Latest commit:** Phase 2 v4.0 — parametric Gamma lag from visa
+  grants to arrivals (state augmentation; 4-6% backcast lift)
 **R version pinned:** 4.5.3 via `renv.lock` (123 packages)
-**Tests:** 76 passing
+**Tests:** 78 passing
 
 ## TL;DR — what you have
 
@@ -52,7 +51,8 @@ could adapt (no leading indicators in the v0.5 Kalman).
 | **Phase 2 v1.0** | ✅ done | bivariate KFAS SSM, fixed-quarter visa-grants lead |
 | **Phase 2 v2.0** | ✅ done | trivariate SSM, NOM as third observation row, π-free headline, 33-40% backcast lift |
 | **Phase 2 v3.0** | ⚠️ explored | time-varying α_n scaffolded but underperforms v2.0 (weak identification); OAD-proportional visa-grant disaggregation modestly helps π-route backcasts |
-| **Phase 2 v4.0** | ⏳ open | parametric Gamma lag, partial pooling, student-enrolments block |
+| **Phase 2 v4.0** | ✅ done | parametric Gamma lag via state augmentation; 4-6% backcast RMSE lift |
+| **Phase 2 v5.0** | ⏳ open | jointly estimate Gamma (α, β); student-enrolments block; cross-category partial pooling |
 | **Phase 3** | ⏳ scaffolded | `stan/hierarchical_nom.stan` compiles but not calibrated |
 | **Phase 4** | ✅ effectively done | bridge regression is the benchmark |
 
@@ -224,17 +224,12 @@ passes `.envir = parent.frame()` explicitly — preserve that pattern.
 
 ### High-impact next steps
 
-1. **Phase 2 v4.0 — parametric Gamma lag.** v1.0/v2.0 use a fixed
-   single-quarter lead from visa grants to arrivals. Replacing it
-   with a discretised Gamma(α, β) lag distribution jointly estimated
-   with the rest of the model is the natural next refinement. The
-   `gamma_lag_weights()` helper in
-   [R/models/kalman_multi.R](R/models/kalman_multi.R) is already
-   there; what's missing is the time-varying Z matrix that loads
-   a weighted sum of past latent states onto each visa-grants
-   observation. Identification needs careful initial-state handling
-   (the diffuse priors aren't enough when both lag and intercept
-   are free).
+1. **Joint MLE of Gamma (α, β).** v4.0 fixes the Gamma lag shape at
+   α=2, β=1 (mode at 1q, 4q tail). Profiling the panel likelihood
+   over a small (α, β) grid would estimate the actual peak lag from
+   data. Pure config-time work — no architecture changes needed.
+   Implementation sketch: wrap `fit_kalman_multi()` in a grid search,
+   pick the (α, β) with highest log-likelihood.
 
 2. **Quarterly disaggregation of DHA grants.** Currently the annual
    FY pivots are broadcast as equal quarters. The pivot files'

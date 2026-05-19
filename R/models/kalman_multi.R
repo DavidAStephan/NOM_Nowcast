@@ -64,6 +64,23 @@ fit_kalman_multi <- function(panel, cfg) {
   include_nom <- isTRUE(cfg$models$kalman_multi$include_nom %||% TRUE)
   nom_alpha_tv <- isTRUE(cfg$models$kalman_multi$nom_alpha_time_varying %||% TRUE)
 
+  # Parametric Gamma lag: when `gamma_lag.enabled` is TRUE, visa
+  # grants observation y_2(t) is set to log(V_{t-K}) where K is the
+  # max forward lag, and the Z matrix loads on K+1 lagged copies of
+  # the level state with discretised Gamma(alpha, beta) weights.
+  gl_cfg <- cfg$models$kalman_multi$gamma_lag %||% list(enabled = FALSE)
+  use_gamma_lag <- isTRUE(gl_cfg$enabled %||% FALSE)
+  gl_alpha <- gl_cfg$alpha %||% 2.0
+  gl_beta  <- gl_cfg$beta  %||% 1.0
+  K_max    <- gl_cfg$k_max %||% 4L
+  visa_gamma_weights <- if (use_gamma_lag) {
+    gamma_lag_weights(gl_alpha, gl_beta, K_max)
+  } else NULL
+  # When Gamma lag is active, override the single-quarter lead with
+  # a K-quarter shift so V_{t-K} aligns with the state-augmented
+  # window the Z matrix loads on.
+  effective_lead <- if (use_gamma_lag) K_max else lead_q
+
   # Visa-grants signal for the total category: sum across visa
   # categories in the panel (the "total" row itself doesn't carry
   # visa_grants — those live on the per-category rows).
@@ -82,7 +99,7 @@ fit_kalman_multi <- function(panel, cfg) {
     dplyr::arrange(.data$period)
 
   y1 <- log1p(pmax(joined$oad_arr, 0))
-  vg_lag <- shift_lag(joined$visa_grants, lead_q)
+  vg_lag <- shift_lag(joined$visa_grants, effective_lead)
   y2_raw <- log1p(pmax(vg_lag, 0))
   alpha_v <- calibrate_offset(y2_raw, y1)
   y2 <- y2_raw - alpha_v
@@ -102,7 +119,8 @@ fit_kalman_multi <- function(panel, cfg) {
                              phi             = damping,
                              seasonal_period = seasonal_period,
                              include_nom     = include_nom,
-                             nom_alpha_time_varying = nom_alpha_tv && include_nom)
+                             nom_alpha_time_varying = nom_alpha_tv && include_nom,
+                             visa_gamma_weights = visa_gamma_weights)
   # Free variance parameters:
   #   bivariate  (no NOM):          5 = 2 H + 3 Q
   #   trivariate static-offset:     6 = 3 H + 3 Q
@@ -139,21 +157,24 @@ fit_kalman_multi <- function(panel, cfg) {
                    smoothing = c("state", "mean", "disturbance"))
 
   kind <- if (!include_nom) "kalman_multi_v1"
+          else if (use_gamma_lag) "kalman_multi_v4"
           else if (nom_alpha_tv) "kalman_multi_v3"
           else "kalman_multi_v2"
   structure(
     list(
-      kfs              = kfs,
-      model            = fit$model,
-      periods          = joined$period,
-      y                = y_mat,
-      alpha_v          = alpha_v,
-      alpha_n          = alpha_n,
-      include_nom      = include_nom,
-      nom_alpha_tv     = nom_alpha_tv && include_nom,
-      lead_quarters    = lead_q,
-      transformation   = "log1p",
-      kind             = kind
+      kfs                 = kfs,
+      model               = fit$model,
+      periods             = joined$period,
+      y                   = y_mat,
+      alpha_v             = alpha_v,
+      alpha_n             = alpha_n,
+      include_nom         = include_nom,
+      nom_alpha_tv        = nom_alpha_tv && include_nom,
+      lead_quarters       = effective_lead,
+      use_gamma_lag       = use_gamma_lag,
+      visa_gamma_weights  = visa_gamma_weights,
+      transformation      = "log1p",
+      kind                = kind
     ),
     class = "kalman_multi_fit"
   )
@@ -188,42 +209,80 @@ calibrate_offset <- function(y_target, y_reference, min_overlap = 8L) {
 #' @keywords internal
 build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
                                 include_nom = FALSE,
-                                nom_alpha_time_varying = FALSE) {
-  # State layout (v3.0 when nom_alpha_time_varying = TRUE):
-  #   [level, slope, seasonal_lag_0 ... seasonal_lag_(S-2), beta_n]
-  # where beta_n is a slow random walk that captures the time-varying
-  # log gap between NOM and the latent arrivals state. Observation 3
-  # (NOM) loads on both `level` and `beta_n`. In static-offset mode
-  # (v2.0, default) beta_n is absent and the offset is subtracted
-  # outside the Kalman in fit_kalman_multi().
+                                nom_alpha_time_varying = FALSE,
+                                visa_gamma_weights = NULL) {
+  # State layout:
+  #   [level, slope, seasonal_lag_0 ... seasonal_lag_(S-2),
+  #    (mu_lag_1 ... mu_lag_K)?, (beta_n)?]
+  #
+  # The optional mu_lag block carries lagged copies of the level
+  # state, so the visa-grants observation can load on (mu_{t-K},
+  # mu_{t-K+1}, ..., mu_t) with Gamma weights — implementing the
+  # parametric-Gamma-lag spec from the methodology doc.
+  #
+  # beta_n is the v3 time-varying NOM-offset state (off by default).
   m_trend <- 2L
   m_seas  <- seasonal_period - 1L
   m_alpha <- if (include_nom && nom_alpha_time_varying) 1L else 0L
-  m       <- m_trend + m_seas + m_alpha
+  m_mulag <- if (!is.null(visa_gamma_weights)) length(visa_gamma_weights) - 1L
+             else 0L
+  m       <- m_trend + m_seas + m_mulag + m_alpha
   p       <- if (include_nom) 3L else 2L
+  # State-vector index helpers
+  i_level <- 1L
+  i_slope <- 2L
+  i_seas  <- m_trend + 1L
+  i_mulag_start <- m_trend + m_seas + 1L
+  i_mulag_end   <- m_trend + m_seas + m_mulag
+  i_beta_n      <- if (m_alpha == 1L) m else NA_integer_
 
   T_mat <- matrix(0, m, m)
-  T_mat[1, 1] <- 1; T_mat[1, 2] <- 1
-  T_mat[2, 2] <- phi
+  T_mat[i_level, i_level] <- 1
+  T_mat[i_level, i_slope] <- 1
+  T_mat[i_slope, i_slope] <- phi
   for (j in seq_len(m_seas)) {
-    T_mat[m_trend + 1L, m_trend + j] <- -1
+    T_mat[i_seas, m_trend + j] <- -1
   }
   if (m_seas >= 2L) {
     for (k in 2L:m_seas) {
       T_mat[m_trend + k, m_trend + k - 1L] <- 1
     }
   }
+  # Lagged level chain. mu_lag_1[t+1] = level[t]; mu_lag_k[t+1] =
+  # mu_lag_{k-1}[t] for k >= 2. Deterministic shifts, no innovation.
+  if (m_mulag >= 1L) {
+    T_mat[i_mulag_start, i_level] <- 1
+    if (m_mulag >= 2L) {
+      for (k in 2L:m_mulag) {
+        T_mat[i_mulag_start + k - 1L, i_mulag_start + k - 2L] <- 1
+      }
+    }
+  }
   if (m_alpha == 1L) {
-    T_mat[m, m] <- 1                         # beta_n random walk
+    T_mat[i_beta_n, i_beta_n] <- 1            # beta_n random walk
   }
 
   Z_mat <- matrix(0, p, m)
-  Z_mat[1, 1] <- 1                           # level -> arrivals
-  Z_mat[1, m_trend + 1L] <- 1                # seasonal -> arrivals
-  Z_mat[2, 1] <- 1                           # level -> visa grants
+  Z_mat[1, i_level] <- 1                     # level -> arrivals
+  Z_mat[1, i_seas]  <- 1                     # seasonal -> arrivals
+  if (m_mulag == 0L) {
+    Z_mat[2, i_level] <- 1                   # level -> visa grants (v1.0/v2.0)
+  } else {
+    # Visa-grants row uses Gamma weights across mu_{t-K}, ..., mu_t.
+    # By the V_{t-K} = sum_k w_k A_{t-K+k} derivation:
+    #   mu_t (i_level)         -> w_K (last weight)
+    #   mu_lag_1 (i_mulag_start)-> w_{K-1}
+    #   ...
+    #   mu_lag_K (i_mulag_end)  -> w_0
+    w <- visa_gamma_weights
+    Z_mat[2, i_level] <- w[length(w)]
+    for (k in seq_len(m_mulag)) {
+      Z_mat[2, i_mulag_start + k - 1L] <- w[length(w) - k]
+    }
+  }
   if (include_nom) {
-    Z_mat[3, 1] <- 1                         # level -> NOM
-    if (m_alpha == 1L) Z_mat[3, m] <- 1      # beta_n -> NOM
+    Z_mat[3, i_level] <- 1
+    if (m_alpha == 1L) Z_mat[3, i_beta_n] <- 1
   }
 
   # Innovations: trend (2), seasonal (1), and optionally beta_n (1).
@@ -233,12 +292,16 @@ build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
   # H[3,3] >> 1 to "ignore" NOM. SD ≈ 0.1 per quarter (Q = 0.01) lets
   # the OAD-to-NOM log ratio drift ~0.5 over a couple of years —
   # roughly the magnitude observed in the 2020-2025 regime shift.
+  # Innovations come from trend (level, slope) and seasonal only —
+  # the mu-lag chain is purely deterministic shifts of the level
+  # state, with no fresh disturbance. beta_n (if present) has its
+  # own innovation.
   n_innov <- 3L + m_alpha
   R_mat <- matrix(0, m, n_innov)
-  R_mat[1, 1] <- 1
-  R_mat[2, 2] <- 1
-  R_mat[m_trend + 1L, 3L] <- 1
-  if (m_alpha == 1L) R_mat[m, 4L] <- 1
+  R_mat[i_level, 1L] <- 1
+  R_mat[i_slope, 2L] <- 1
+  R_mat[i_seas,  3L] <- 1
+  if (m_alpha == 1L) R_mat[i_beta_n, 4L] <- 1
   Q_diag <- if (m_alpha == 1L) c(NA_real_, NA_real_, NA_real_, 0.01)
             else               c(NA_real_, NA_real_, NA_real_)
   Q_mat <- diag(Q_diag)
@@ -254,17 +317,25 @@ build_multi_ssmodel <- function(y_mat, phi, seasonal_period,
   H_mat <- diag(H_diag)
 
   P1    <- diag(rep(0, m))
-  # Diffuse init on level + slope + beta_n (so beta_n is free to
-  # learn its initial level from the data). Q[beta_n] is tight,
-  # which prevents quarterly noise absorption — together this gives
-  # a slow-drift OAD-to-NOM offset estimator that converges to the
-  # right mean within the first few observable NOM quarters.
-  diff_init <- c(1, 1, rep(0, m_seas), if (m_alpha == 1L) 1 else integer(0))
+  # Diffuse init on level + slope (+ beta_n if used). The mu-lag
+  # states get a LARGE FINITE prior rather than diffuse init — with
+  # only 3 observations per period, having 2 + K diffuse states
+  # overspecifies the diffuse filtering and KFAS warns "Number of
+  # nonzero elements in Finf is not equal to the number of diffuse
+  # states". A finite SD ~10 in log space is effectively uninformative.
+  diff_init <- c(1, 1,                                       # level, slope
+                 rep(0, m_seas),                             # seasonal
+                 if (m_mulag > 0L) rep(0, m_mulag) else integer(0),
+                 if (m_alpha == 1L) 1 else integer(0))
   P1inf <- diag(diff_init)
   for (j in (m_trend + 1L):(m_trend + m_seas)) P1[j, j] <- 1
+  if (m_mulag >= 1L) {
+    for (j in i_mulag_start:i_mulag_end) P1[j, j] <- 100   # SD = 10
+  }
 
   state_names <- c("level", "slope",
                    paste0("seasonal_lag_", seq_len(m_seas) - 1L),
+                   if (m_mulag > 0L) paste0("mu_lag_", seq_len(m_mulag)) else character(),
                    if (m_alpha == 1L) "beta_n" else character())
 
   SSModel   <- KFAS::SSModel

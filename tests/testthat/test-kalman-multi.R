@@ -15,6 +15,34 @@ test_that("gamma_lag_weights are normalised and well-behaved", {
   expect_equal(sum(w), 1, tolerance = 1e-12)
 })
 
+test_that("gamma_lag_weights peak at the Gamma mode for alpha > 1", {
+  # Gamma(2, 1) has mode at (alpha - 1)/beta = 1, so w[2] should be max
+  w <- gamma_lag_weights(2, 1, 4)
+  expect_equal(which.max(w), 2L)
+})
+
+test_that("build_multi_ssmodel augments state with K mu-lag copies when Gamma lag is enabled", {
+  set.seed(7)
+  n <- 40
+  y_mat <- cbind(arr = log1p(60000 + rnorm(n, 0, 2000)),
+                 vg  = log1p(50000 + rnorm(n, 0, 1500)))
+  w <- gamma_lag_weights(2, 1, 4)
+  ssm <- build_multi_ssmodel(y_mat, phi = 0.85, seasonal_period = 4L,
+                             include_nom = FALSE,
+                             visa_gamma_weights = w)
+  # 2 + 3 + 4 = 9 state dims (trend + seasonal + mu-lag chain)
+  expect_equal(dim(ssm$Z)[2], 9L)
+  expect_equal(dim(ssm$T)[1], 9L)
+  # Shift chain: mu_lag_1[t+1] = level[t]
+  expect_equal(ssm$T[6, 1, 1], 1)
+  # Visa row loads on level + 4 mu lags with Gamma weights summing to 1
+  Z_visa <- c(ssm$Z[2, 1, 1], ssm$Z[2, 6, 1], ssm$Z[2, 7, 1],
+              ssm$Z[2, 8, 1], ssm$Z[2, 9, 1])
+  expect_equal(sum(Z_visa), 1, tolerance = 1e-12)
+  # Loading on current level uses the smallest (last) Gamma weight w_K
+  expect_equal(ssm$Z[2, 1, 1], w[length(w)])
+})
+
 test_that("build_multi_ssmodel produces a valid 2-equation SSModel", {
   set.seed(7)
   n <- 40

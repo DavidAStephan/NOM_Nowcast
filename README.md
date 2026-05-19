@@ -113,6 +113,42 @@ preliminary estimate available at `T`.
   the pipeline never overwrites.
 - No `setwd`, no `rm(list=ls())`, no manual data steps anywhere.
 
+## Phase 2 v4.0 — parametric Gamma lag for visa grants
+
+The bivariate / trivariate Kalman in v1.0/v2.0 used a fixed
+single-quarter lead from visa grants to arrivals — i.e. the
+observation row for visa grants loaded only on the current latent
+log-arrivals state. v4.0 implements the parametric Gamma lag
+specification from the methodology document:
+
+$$
+V_{c,t} = \kappa_c \sum_{k=0}^{K} w_{c,k}(\alpha_c, \beta_c)\, A^*_{c,t+k} + \varepsilon^V_{c,t}
+$$
+
+with $w_k$ a discretised Gamma(α, β) lag distribution. Implementation
+augments the state vector with K lagged copies of the level state
+($\mu_{t-1}, \dots, \mu_{t-K}$), shifts the visa-grants observation
+back by K quarters, and loads the row on the K+1 lagged μ states
+with the Gamma weights. Defaults are α=2, β=1, K=4 (mode at 1q, four-
+quarter tail). Configure via `models.kalman_multi.gamma_lag`.
+
+### Head-to-head backtest (11 quarterly dates, 2023-Q1 → 2025-Q3)
+
+| Model | h=-2 RMSE | h=-1 RMSE | h=0 RMSE | h=+1 RMSE |
+|-------|----------:|----------:|---------:|----------:|
+| bridge | **21,872** | **26,432** | – | – |
+| **kalman_multi_v2 (Gamma lag)** | **36,183** | **38,330** | 78,773 | 73,970 |
+| random walk | 39,188 | 46,857 | – | – |
+| AR(1) | 48,150 | – | – | – |
+| kalman_multi_pi (π-route, Gamma lag) | 55,573 | 61,813 | 81,976 | 80,595 |
+| kalman_v1 (Phase 1) | 55,700 | 59,845 | 78,042 | 77,350 |
+
+The state-augmented Gamma lag gives a clean **−3.6%/−5.9%** backcast
+improvement on the v2.0 NOM-anchored headline (`kalman_multi_v2`).
+The state-augmentation cost is 4 extra deterministic state dimensions
+(9 total) and zero new MLE parameters — Gamma α and β are fixed
+config knobs in v4.0.
+
 ## Phase 2 v3.0 exploration (negative + small positive)
 
 Two extensions to v2.0 were tried in this iteration:
