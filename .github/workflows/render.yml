@@ -35,6 +35,11 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_LIBS_USER: ${{ github.workspace }}/R-lib
+      # The repo's .Rprofile auto-bootstraps renv on every R startup,
+      # which hijacks install.packages() to use the lockfile (generated
+      # locally on macOS, irrelevant on the Linux runner). Disable
+      # renv's autoloader so plain RSPM installs work.
+      RENV_CONFIG_AUTOLOADER_ENABLED: "FALSE"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
