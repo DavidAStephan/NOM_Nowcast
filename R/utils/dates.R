@@ -41,6 +41,23 @@ nn_last_completed_quarter <- function(asof) {
   nn_quarter_start(this_q - lubridate::days(1))
 }
 
+#' Format a `Date` as "YYYY Qn" / "YYYY-Qn"
+#'
+#' base::strftime's `%q` isn't portable (it doesn't exist on glibc),
+#' so qmd documents using `format(x, "%Y-Q%q")` silently emit a
+#' literal `%q` on the Linux runner. This helper computes the
+#' quarter from the month and pastes a consistent label.
+#'
+#' @param x A `Date`.
+#' @param sep Separator between year and "Q" (default `" "`).
+#' @return Character vector, e.g. "2024 Q2".
+#' @export
+nn_quarter_label <- function(x, sep = " ") {
+  d <- as.Date(x)
+  q <- (as.integer(format(d, "%m")) - 1L) %/% 3L + 1L
+  paste0(format(d, "%Y"), sep, "Q", q)
+}
+
 #' All quarter starts in `[from, to]` inclusive
 #'
 #' @param from,to `Date`-coercible bounds.

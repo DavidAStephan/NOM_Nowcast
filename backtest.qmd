@@ -82,8 +82,8 @@ scored |>
   gt::tab_options(table.font.size = "small") |>
   gt::tab_source_note(gt::md(
     paste0("Backtest grid: ", length(runs), " quarterly as-of dates from ",
-           format(min(backtest_grid), "%Y-Q%q"), " to ",
-           format(max(backtest_grid), "%Y-Q%q"), ". ",
+           nn_quarter_label(min(backtest_grid), sep = "-"), " to ",
+           nn_quarter_label(max(backtest_grid), sep = "-"), ". ",
            "RMSE / MAE in persons. Lower is better. ",
            "Models are sorted within each horizon by RMSE.")
   ))

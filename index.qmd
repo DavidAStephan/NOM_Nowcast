@@ -9,7 +9,7 @@ date-format: "D MMMM YYYY"
 #| include: false
 files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
 for (f in files) sys.source(f, envir = globalenv())
-library(dplyr); library(ggplot2); library(gt); library(scales)
+library(dplyr); library(ggplot2); library(gt); library(scales); library(lubridate)
 
 cfg   <- config::get(file = "config.yml")
 asof  <- Sys.Date()
@@ -53,7 +53,7 @@ fmt_k <- function(x) {
 
 ::: {.callout-card}
 ::: {.headline-label}
-Headline nowcast — `{r} format(hl_row$period, '%Y · Q%q')`
+Headline nowcast — `{r} nn_quarter_label(hl_row$period, sep = ' · ')`
 :::
 ::: {.headline-number}
 `{r} fmt_k(hl_row$nom_mean)`
@@ -90,7 +90,7 @@ recent <- headline |>
   dplyr::arrange(period) |>
   dplyr::filter(period >= asof_q %m-% months(15L)) |>
   dplyr::transmute(
-    Quarter      = format(period, "%Y · Q%q"),
+    Quarter      = nn_quarter_label(period, sep = " · "),
     Model        = nom_mean,
     `80% lower`  = lower_80,
     `80% upper`  = upper_80,
@@ -169,8 +169,8 @@ gl_w <- fit_multi$visa_gamma_weights
 
 cat(sprintf("- Pipeline run:        %s\n", format(asof, "%d %B %Y, %H:%M %Z")))
 cat(sprintf("- Panel coverage:      %s to %s (%d quarterly observations × %d categories)\n",
-            format(periods_span[1L], "%Y-Q%q"),
-            format(periods_span[2L], "%Y-Q%q"),
+            nn_quarter_label(periods_span[1L], sep = "-"),
+            nn_quarter_label(periods_span[2L], sep = "-"),
             length(unique(panel$period)), length(unique(panel$category))))
 cat(sprintf("- Model:               %s\n", fit_multi$kind %||% "kalman_multi"))
 cat(sprintf("- Alpha_v offset:      %.3f (log-gap OAD-arrivals vs lagged visa-grants)\n",
