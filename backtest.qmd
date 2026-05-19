@@ -11,22 +11,11 @@ files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
 for (f in files) sys.source(f, envir = globalenv())
 library(dplyr); library(ggplot2); library(gt); library(scales)
 
-cfg <- config::get(file = "config.yml")
-# Run a fresh backtest at site-build time. Pseudo-real-time mode
-# uses today's data restricted by publication lag at each as-of date.
-cfg$paths$duckdb <- tempfile(fileext = ".duckdb")
-on.exit(unlink(cfg$paths$duckdb), add = TRUE)
-db <- vintages_init(cfg)
-cfg$backtest$start <- "2023-01-01"
-# `end` defaults to last completed quarter, which is what we want.
-
-backtest_grid <- build_backtest_grid(cfg)
-runs <- lapply(backtest_grid, function(asof_d) {
-  tryCatch(run_backtest(asof_d, db, cfg), error = function(e) NULL)
-})
-runs <- Filter(Negate(is.null), runs)
-
-scored <- score_backtest(runs, db, cfg)
+scored_path <- "data/backtest_scored.rds"
+meta_path   <- "data/backtest_meta.rds"
+scored <- if (file.exists(scored_path)) readRDS(scored_path) else NULL
+meta   <- if (file.exists(meta_path))   readRDS(meta_path)   else NULL
+has_backtest <- !is.null(scored) && nrow(scored) > 0L
 ```
 
 ## Methodology
@@ -59,9 +48,14 @@ Models compared:
 | `ar1` | AR(1) on quarter-on-quarter NOM growth. |
 | `abs_preliminary` | The ABS NOM value at vintage $T$ (informational — we don't have true vintage history). |
 
+The backtest is computed offline (via `scripts/refresh_backtest.R`)
+and the scored tibble is committed to the repo. The site renders cheaply
+on every push; the backtest refreshes on demand or on a slower cadence.
+
 ## Headline results
 
 ```{r headline-table}
+#| eval: !expr has_backtest
 scored |>
   dplyr::filter(category == "total") |>
   dplyr::group_by(model, horizon) |>
@@ -81,17 +75,42 @@ scored |>
                  decimals = 0, use_seps = TRUE) |>
   gt::tab_options(table.font.size = "small") |>
   gt::tab_source_note(gt::md(
-    paste0("Backtest grid: ", length(runs), " quarterly as-of dates from ",
-           nn_quarter_label(min(backtest_grid), sep = "-"), " to ",
-           nn_quarter_label(max(backtest_grid), sep = "-"), ". ",
-           "RMSE / MAE in persons. Lower is better. ",
-           "Models are sorted within each horizon by RMSE.")
+    paste0(
+      "Backtest grid: ",
+      if (!is.null(meta)) meta$n_successful else "?",
+      " of ",
+      if (!is.null(meta)) meta$n_asof_dates else "?",
+      " quarterly as-of dates",
+      if (!is.null(meta)) paste0(" from ",
+            nn_quarter_label(meta$grid_from, sep = "-"), " to ",
+            nn_quarter_label(meta$grid_to,   sep = "-"))
+      else "",
+      ". Refreshed ",
+      if (!is.null(meta)) format(meta$refreshed_at, "%d %B %Y") else "—",
+      ". RMSE / MAE in persons. Lower is better. ",
+      "Models are sorted within each horizon by RMSE."
+    )
   ))
+```
+
+```{r placeholder}
+#| eval: !expr (!has_backtest)
+#| results: asis
+cat(
+  ":::{.callout-note}\n",
+  "**Backtest snapshot not yet committed to this repo.** Run ",
+  "`Rscript scripts/refresh_backtest.R` locally, or trigger the ",
+  "`Refresh backtest` workflow on GitHub. The script writes ",
+  "`data/backtest_scored.rds`, which this page reads on every render.\n",
+  ":::\n",
+  sep = ""
+)
 ```
 
 ## RMSE by horizon
 
 ```{r rmse-plot}
+#| eval: !expr has_backtest
 plot_backtest_rmse(scored)
 ```
 
@@ -123,10 +142,16 @@ plot_backtest_rmse(scored)
 ## Run details
 
 ```{r run-meta}
-cat(sprintf("- Backtest as-of dates: %d (%s to %s)\n",
-            length(backtest_grid),
-            as.character(min(backtest_grid)),
-            as.character(max(backtest_grid))))
-cat(sprintf("- Build run:            %s\n",
+if (!is.null(meta)) {
+  cat(sprintf("- Backtest as-of dates: %d (%s to %s)\n",
+              meta$n_asof_dates,
+              as.character(meta$grid_from),
+              as.character(meta$grid_to)))
+  cat(sprintf("- Last refreshed:       %s\n",
+              format(meta$refreshed_at, "%d %B %Y %H:%M %Z")))
+} else {
+  cat("- No backtest snapshot present yet.\n")
+}
+cat(sprintf("- Site build:           %s\n",
             format(Sys.time(), "%d %B %Y %H:%M %Z")))
 ```

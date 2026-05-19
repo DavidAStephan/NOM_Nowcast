@@ -101,11 +101,13 @@ list(
   tar_target(bench_ar1,   benchmark_ar1(panel_quarterly, cfg_target)),
   tar_target(bench_bridge, benchmark_bridge(panel_quarterly, cfg_target)),
 
-  # ----------------------------------------------------------------- backtest
-  tar_target(backtest_dates,  build_backtest_grid(cfg_target)),
-  tar_target(backtest_runs,   run_backtest(backtest_dates, vintage_db, cfg_target),
-             pattern = map(backtest_dates), iteration = "list"),
-  tar_target(backtest_scored, score_backtest(backtest_runs, vintage_db, cfg_target)),
+  # The backtest is deliberately NOT in this DAG. It's a calibration
+  # artifact, not a per-render dependency: refitting every model at
+  # every quarterly as-of date takes 20-30 minutes and would burn the
+  # CI budget on every push. Instead, `scripts/refresh_backtest.R`
+  # writes `data/backtest_scored.rds` on demand (locally or via a
+  # separate cron/manual workflow), and `backtest.qmd` reads that
+  # committed file. See scripts/refresh_backtest.R for the entry point.
 
   # The Quarto website at the project root (index.qmd / methodology.qmd /
   # backtest.qmd / about.qmd) is rendered separately via `quarto render`
