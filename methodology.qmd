@@ -298,20 +298,101 @@ grid search available as a diagnostic via
 - **Cross-category partial pooling** of the trend-innovation
   variances $\sigma^2_{u,c}$.
 
-## Phase 3 — Bayesian hierarchical model (scaffolded)
+## Phase 3 — Bayesian state-space models
 
-The full target specification moves to Stan via `{cmdstanr}` with:
+Phase 3 ports the Phase 2 architecture to Stan via `{cmdstanr}`,
+trading MLE point estimates for full HMC posteriors. The motivation
+is correctness of credible intervals: the Phase 2 Kalman treats the
+MLE-fit parameters as fixed and propagates only the state-noise
+component of uncertainty, which understates the predictive
+intervals.
 
-- partial pooling across categories on innovation variances,
-- a random-walk (eventually GP) prior on $\mathrm{logit}\,\pi_{c,t}$
-  with a 16-quarter length-scale,
-- a vintage-aware NOM observation block:
-  $\mathrm{Var}(\mathrm{NOM}^{ABS}_{q,v}) = \sigma^2_r(v - q)$,
-- full posterior summaries on every reported quantity.
+The Phase 3 models live alongside the Kalman ones — the backtest
+page compares them directly.
 
-Stan source: [stan/hierarchical_nom.stan](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/hierarchical_nom.stan).
-Status: scaffold compiles but is not yet calibrated against the v1
-panel. Calibration plan documented in the file header.
+### v0.1 — `bayes_headline`
+
+Direct port of `kalman_multi` v2.0 to Stan: trivariate observation
+block (OAD, lagged visa-grants, NOM) on a damped local-linear
+latent state $\mu_t$. State innovations are non-centered. Full
+HMC with 2 chains × 500 warmup × 500 sampling.
+
+The model **works**, but suffers from a $\sigma_o \leftrightarrow
+\sigma_\mu$ identifiability funnel — observation noise and state-
+innovation noise compete to absorb log-arrivals variability,
+giving a posterior correlation of $\approx -0.7$ between them.
+HMC's diagonal mass matrix can't trace the funnel efficiently,
+saturating NUTS' max tree depth on ~60-99% of iterations.
+
+### v0.2 — `bayes_gamma`
+
+v0.1 plus a forward Gamma-lag on the visa observation row, mirroring
+`kalman_v4`. Visa observation at $t$ loads on
+$\mathrm{logsumexp}_k(\log w_k + \mu_{t+k})$ where $w_k$ is a
+$\Gamma(\alpha, \beta)$ pmf evaluated at $k = 0, \dots, K$ and
+normalised. With the default $(\alpha, \beta) = (2, 1)$,
+$K = 4$, this matches the Phase 2 v4.0 model architecturally.
+
+bayes_gamma is the **current production headline** — the landing
+page reads from a snapshot built by `scripts/refresh_headline_bayes.R`.
+
+### v0.3 — `bayes_gamma_learned`
+
+Same as v0.2 but $(\alpha, \beta)$ are sampled jointly with the
+state-space, replacing the `kalman_v5` grid search with HMC
+marginalisation. The posterior settles on $\alpha \approx 0.85$,
+$\beta \approx 3.4$ — a sharply earlier lag than the kalman v5
+grid box assumed, with $\sim 83\%$ of the mass on the current
+quarter. Backtest RMSE is slightly worse than v0.2 because the
+extra lag-shape uncertainty widens the credible intervals.
+
+### v0.6 — `bayes_kalman` (Kalman marginal likelihood)
+
+Reformulates v0.2 as a Kalman-filter likelihood. The latent state
+trajectory $\{\mu_t, \beta_t, \mu_{t-1}, \dots, \mu_{t-K}\}$ is
+integrated out analytically; only $\sim 10$ static parameters get
+sampled. This **eliminates the identifiability funnel** entirely
+($\sigma$ parameters no longer interact with state-level samples in
+the posterior geometry):
+
+|                     | bayes_gamma   | bayes_kalman  |
+|---------------------|---------------|---------------|
+| divergences         | $2.2\%$       | $0\%$         |
+| treedepth-max hit   | $99\%$        | $0\%$         |
+| ESS (slow params)   | 50–100        | 600–1700      |
+
+Two model trade-offs:
+
+1. The $\mathrm{logsumexp}$ visa observation linearises to
+   $\sum_k w_k \mu_{t+k}$ (1st-order Taylor, exact when arrivals
+   are flat across the lag window).
+2. The visa lag is *backward* in calendar time
+   ($\text{visa}_t$ informs arrivals at $t, t-1, \dots, t-K$).
+   The forward-lag convention isn't cleanly expressible in a
+   causal forward Kalman without a smoother.
+
+Backtest result is materially better at backcasts:
+$h = -1$ RMSE drops from 36.7k (`kalman_multi_v2`) to **34.0k**
+in the post-COVID regime. At $h = 0$ (the actual nowcast quarter),
+`bayes_gamma` still leads slightly (63.8k vs 64.9k), which is why
+the production headline stays on bayes_gamma for now.
+
+### v0.7 — RTS smoother (negative result)
+
+Implemented a Rauch-Tung-Striebel backward smoother in
+`generated quantities` so in-sample $\mu_t$ would use *all*
+observations. Empirically **worse** on this panel: the
+filter has a small downward bias ($\approx 10$k) which the
+smoother amplifies to $\approx 29$k by propagating future
+observations backward through $F^{-1}$. Filter is more
+robust to model misspecification than the smoother here.
+Reverted and documented in the Stan file header.
+
+Stan sources:
+[stan/headline_ssm.stan](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/headline_ssm.stan),
+[stan/headline_gamma_ssm.stan](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/headline_gamma_ssm.stan),
+[stan/headline_gamma_learned_ssm.stan](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/headline_gamma_learned_ssm.stan),
+[stan/headline_kalman_ssm.stan](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/headline_kalman_ssm.stan).
 
 ## Phase 4 — bridge regression benchmarks
 
