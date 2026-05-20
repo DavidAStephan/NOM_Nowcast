@@ -189,6 +189,18 @@ run_backtest <- function(asof_date, db_path, cfg) {
              })
   } else tibble::tibble()
 
+  # Phase 3 v0.6 — Kalman-marginal-likelihood Bayesian SSM.
+  bkcfg <- cfg$models$bayes_kalman %||% list(enabled = FALSE)
+  bk_window <- bkcfg$backtest_window %||% 12L
+  bayes_kalman_fc <- if (isTRUE(bkcfg$enabled %||% FALSE) &&
+                        asof_date >= bayes_window_floor(bk_window)) {
+    tryCatch(fit_bayes_kalman(panel, asof_date, cfg),
+             error = function(e) {
+               nn_warn("bayes_kalman failed at {format(asof_date)}: {conditionMessage(e)}")
+               tibble::tibble()
+             })
+  } else tibble::tibble()
+
   horizons <- cfg$backtest$horizons %||% c(-2, -1, 0, 1)
   ref_q <- nn_quarter_start(asof_date - lubridate::days(1))
 
@@ -249,6 +261,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
   if (nrow(bayes_gamma_learned_fc) > 0L) {
     rows <- c(rows, list(
       bayes_gamma_learned_fc |>
+        dplyr::mutate(category = "total") |>
+        dplyr::semi_join(keeper, by = "period")
+    ))
+  }
+  if (nrow(bayes_kalman_fc) > 0L) {
+    rows <- c(rows, list(
+      bayes_kalman_fc |>
         dplyr::mutate(category = "total") |>
         dplyr::semi_join(keeper, by = "period")
     ))

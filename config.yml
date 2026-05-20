@@ -161,6 +161,41 @@ default:
         grid_search: true
         alpha_grid: [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
         beta_grid:  [0.5, 1.0, 1.5, 2.0]
+    bayes_kalman:
+      # Phase 3 v0.6 — Bayesian SSM with Kalman-filter likelihood.
+      # The latent state {mu_t, beta_t, lag_1..lag_K_max} is integrated
+      # out analytically in Stan, leaving ~10 static parameters to
+      # sample. Eliminates the sigma_oad ↔ sigma_mu funnel that
+      # saturates treedepth in the latent-state versions; sampling
+      # should be much faster per ESS unit.
+      #
+      # The visa observation is linearised from log_sum_exp to
+      # sum_k w_k * mu[t+k] (1st-order Taylor); exact when arrivals
+      # are flat across the lag window.
+      enabled: false
+      chains: 2
+      iter_warmup: 500
+      iter_sample: 500
+      adapt_delta: 0.9
+      max_treedepth: 10
+      seed: 20260520
+      forecast_horizons: 4
+      pre_nom_quarters: 8
+      backtest_window: 12
+      gamma_lag:
+        alpha: 2.0
+        beta:  1.0
+        k_max: 4
+      priors:
+        mu0_loc:           11.0
+        mu0_scale:          1.5
+        slope0_scale:       0.1
+        sigma_obs_scale:    0.3
+        sigma_state_scale:  0.1
+        alpha_scale:        1.0
+        phi_loc:            0.85
+        phi_conc:          10
+
     bayes_gamma_learned:
       # Phase 3 v0.3 — like bayes_gamma but learn the Gamma (alpha, beta)
       # parameters jointly with the rest of the model instead of pinning
