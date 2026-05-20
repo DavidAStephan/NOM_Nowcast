@@ -48,7 +48,6 @@ list(
   tar_target(oad_raw,          fetch_oad(cfg_target, asof_date)),
   tar_target(nom_raw,          fetch_nom(cfg_target, asof_date)),
   tar_target(visa_grants_raw,  fetch_visa_grants(cfg_target, asof_date)),
-  tar_target(students_raw,     fetch_student_data(cfg_target, asof_date)),
   tar_target(bitre_raw,        fetch_bitre(cfg_target, asof_date)),
   tar_target(twh_raw,          fetch_temp_visa_holders(cfg_target, asof_date)),
 
@@ -56,7 +55,6 @@ list(
   tar_target(oad_vintaged,         vintages_write(vintage_db, "oad",         oad_raw,         asof_date)),
   tar_target(nom_vintaged,         vintages_write(vintage_db, "nom",         nom_raw,         asof_date)),
   tar_target(visa_grants_vintaged, vintages_write(vintage_db, "visa_grants", visa_grants_raw, asof_date)),
-  tar_target(students_vintaged,    vintages_write(vintage_db, "students",    students_raw,    asof_date)),
   tar_target(bitre_vintaged,       vintages_write(vintage_db, "bitre",       bitre_raw,       asof_date)),
   tar_target(twh_vintaged,         vintages_write(vintage_db, "twh",         twh_raw,         asof_date)),
 
@@ -64,11 +62,10 @@ list(
   tar_target(oad_clean,         clean_oad(oad_raw, cfg_target)),
   tar_target(nom_clean,         clean_nom(nom_raw, cfg_target)),
   tar_target(visa_grants_clean, clean_visa_grants(visa_grants_raw, cfg_target)),
-  tar_target(students_clean,    clean_students(students_raw, cfg_target)),
 
   # Quarterly aggregated panel by category, ready for modelling.
   tar_target(panel_quarterly,   build_quarterly_panel(
-    oad_clean, nom_clean, visa_grants_clean, students_clean, cfg_target
+    oad_clean, nom_clean, visa_grants_clean, cfg_target
   )),
 
   # ----------------------------------------------------------------- pi

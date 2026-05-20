@@ -69,10 +69,6 @@ default:
     sub_page_keywords: ["visit", "study", "live", "work", "migration-program"]
     publication_lag_days: 45
 
-  education:
-    students_index: "https://www.education.gov.au/international-education-data-and-research"
-    publication_lag_days: 35
-
   bitre:
     airline_activity_index: "https://www.bitre.gov.au/statistics/aviation"
     publication_lag_days: 60

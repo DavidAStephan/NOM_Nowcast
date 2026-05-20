@@ -69,13 +69,3 @@ reenrich_visa_grants <- function(df) {
   df
 }
 
-#' @rdname vintage_reenrich
-reenrich_students <- function(df) {
-  if (is.null(df) || nrow(df) == 0L) return(df)
-  if (all(c("metric", "sector") %in% names(df))) return(df)
-  parts <- stringr::str_split_fixed(df$series_id, ":", n = 4L)
-  df$metric   <- parts[, 2L]
-  df$sector   <- parts[, 3L]
-  df$category <- "student"
-  df
-}

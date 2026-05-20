@@ -62,8 +62,7 @@ run_backtest <- function(asof_date, db_path, cfg) {
   vintages <- list(
     oad         = vintages_read_asof(db_path, "oad",         asof_date),
     nom         = vintages_read_asof(db_path, "nom",         asof_date),
-    visa_grants = vintages_read_asof(db_path, "visa_grants", asof_date),
-    students    = vintages_read_asof(db_path, "students",    asof_date)
+    visa_grants = vintages_read_asof(db_path, "visa_grants", asof_date)
   )
   # Pseudo-real-time mode: when no actual historical vintages have
   # been captured yet (vintage store empty for this source at
@@ -78,20 +77,16 @@ run_backtest <- function(asof_date, db_path, cfg) {
     if (!nrow(vintages$nom))  vintages$nom <- pseudo_vintage_read(cfg, "nom")
     if (!nrow(vintages$visa_grants))
       vintages$visa_grants <- pseudo_vintage_read(cfg, "visa_grants")
-    if (!nrow(vintages$students))
-      vintages$students <- pseudo_vintage_read(cfg, "students")
   }
   oad_lag <- cfg$abs$publication_lag_days$oad %||% 35
   nom_lag <- cfg$abs$publication_lag_days$nom %||% 183
   vg_lag  <- cfg$homeaffairs$publication_lag_days %||% 45
-  stu_lag <- cfg$education$publication_lag_days %||% 35
 
   oad_clean    <- clean_oad(reenrich_oad(restrict_to_asof(vintages$oad, asof_date, oad_lag)), cfg)
   nom_clean    <- clean_nom(reenrich_nom(restrict_to_asof(vintages$nom, asof_date, nom_lag)), cfg)
   vg_clean     <- clean_visa_grants(reenrich_visa_grants(restrict_to_asof(vintages$visa_grants, asof_date, vg_lag)), cfg)
-  stu_clean    <- clean_students(reenrich_students(restrict_to_asof(vintages$students, asof_date, stu_lag)), cfg)
 
-  panel <- build_quarterly_panel(oad_clean, nom_clean, vg_clean, stu_clean, cfg)
+  panel <- build_quarterly_panel(oad_clean, nom_clean, vg_clean, cfg)
   if (nrow(panel) < 8L) {
     nn_warn("Insufficient panel data at {format(asof_date)} (n={nrow(panel)})")
     return(empty_backtest_run())
@@ -299,7 +294,6 @@ pseudo_vintage_read <- function(cfg, source) {
     oad         = fetch_oad(cfg, Sys.Date()),
     nom         = fetch_nom(cfg, Sys.Date()),
     visa_grants = fetch_visa_grants(cfg, Sys.Date()),
-    students    = fetch_student_data(cfg, Sys.Date()),
     tibble::tibble()
   )
   out <- if (!nrow(fetched)) tibble::tibble() else fetched

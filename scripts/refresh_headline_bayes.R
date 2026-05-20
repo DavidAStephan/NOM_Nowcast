@@ -27,10 +27,9 @@ cli::cli_alert_info("Fetching upstream sources at as-of {format(asof)}")
 oad         <- fetch_oad(cfg, asof)
 nom         <- fetch_nom(cfg, asof)
 visa_grants <- fetch_visa_grants(cfg, asof)
-students    <- empty_students_clean()
 
 panel <- build_quarterly_panel(clean_oad(oad, cfg), clean_nom(nom, cfg),
-                               clean_visa_grants(visa_grants, cfg), students, cfg)
+                               clean_visa_grants(visa_grants, cfg), cfg)
 cli::cli_alert_info("Fitting bayes_gamma headline")
 t0 <- Sys.time()
 fc <- fit_bayes_gamma(panel, asof, cfg)

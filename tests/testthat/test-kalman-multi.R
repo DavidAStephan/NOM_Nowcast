@@ -46,8 +46,6 @@ test_that("grid_search_gamma_lag returns the max-log-likelihood pair", {
     oad_lt_departures = c(rep(20000, n_q),  rep(NA_real_, n_q)),
     oad_lt_net        = NA_real_,
     visa_grants       = c(rep(NA_real_, n_q), expm1(vg_log)),
-    student_commencements = NA_real_,
-    student_enrolments    = NA_real_,
     nom_preliminary       = NA_real_,
     nom_revised           = NA_real_,
     nom_final             = c(round(0.4 * expm1(arr_log)),
@@ -195,8 +193,6 @@ test_that("fit_kalman_multi works on a small synthetic panel", {
     visa_grants       = c(rep(NA_real_, n_q),
                           0.9 * (rep(20000, n_q) + cumsum(rnorm(n_q, 50, 30))) +
                             rnorm(n_q, 0, 500)),
-    student_commencements = NA_real_,
-    student_enrolments    = NA_real_,
     nom_preliminary       = NA_real_,
     nom_revised           = NA_real_,
     nom_final             = NA_real_

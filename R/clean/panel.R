@@ -12,8 +12,6 @@
 #'   * `oad_lt_departures`   ... and departures
 #'   * `oad_lt_net`          arrivals - departures
 #'   * `visa_grants`         DHA visa grants (sum within quarter)
-#'   * `student_commencements` commencements where category == student
-#'   * `student_enrolments`    enrolments where category == student
 #'   * `nom_preliminary`     ABS preliminary value at the relevant vintage
 #'   * `nom_final`           ABS latest-vintage NOM (only available after
 #'                           sufficient revisions have settled; NA
@@ -21,8 +19,7 @@
 #'
 #' Missing values propagate; they are not imputed.
 #'
-#' @param oad_clean,nom_clean,visa_grants_clean,students_clean Cleaned
-#'   source tibbles.
+#' @param oad_clean,nom_clean,visa_grants_clean Cleaned source tibbles.
 #' @param cfg Project config.
 #' @return Quarterly panel tibble.
 #' @export
@@ -72,7 +69,7 @@ spread_annual_to_quarters <- function(df, weights_df = NULL) {
 }
 
 build_quarterly_panel <- function(oad_clean, nom_clean,
-                                  visa_grants_clean, students_clean, cfg) {
+                                  visa_grants_clean, cfg) {
   levels <- unique(c(cfg$categories$levels, "total"))
 
   oad_q <- oad_clean |>
@@ -152,37 +149,19 @@ build_quarterly_panel <- function(oad_clean, nom_clean,
       dplyr::rename(period = "quarter")
   }
 
-  stu_q <- students_clean |>
-    dplyr::filter(.data$sector %in% c("Higher Education", "Higher Ed", "VET",
-                                      "Schools", "ELICOS", "Non-award")) |>
-    dplyr::mutate(quarter = nn_quarter_start(.data$period)) |>
-    dplyr::group_by(.data$quarter, .data$metric) |>
-    dplyr::summarise(value = sum(.data$value, na.rm = TRUE), .groups = "drop") |>
-    tidyr::pivot_wider(names_from = "metric", values_from = "value") |>
-    dplyr::rename(period = "quarter")
-  if (!"commencements" %in% names(stu_q)) stu_q$commencements <- NA_real_
-  if (!"enrolments"    %in% names(stu_q)) stu_q$enrolments    <- NA_real_
-  stu_q <- stu_q |>
-    dplyr::transmute(
-      .data$period, category = "student",
-      student_commencements = .data$commencements,
-      student_enrolments    = .data$enrolments
-    )
-
   # Build the (period x category) grid spanning the union of inputs
-  periods <- sort(unique(c(oad_q$period, nom_q$period, vg_q$period, stu_q$period)))
+  periods <- sort(unique(c(oad_q$period, nom_q$period, vg_q$period)))
   grid <- tidyr::expand_grid(period = periods, category = levels)
 
   out <- grid |>
     dplyr::left_join(oad_q, by = c("period", "category")) |>
     dplyr::left_join(nom_q, by = c("period", "category")) |>
-    dplyr::left_join(vg_q, by = c("period", "category")) |>
-    dplyr::left_join(stu_q, by = c("period", "category"))
+    dplyr::left_join(vg_q, by = c("period", "category"))
 
   # Preserve column ordering for stability
   must <- c("period", "category", "oad_lt_arrivals", "oad_lt_departures",
-            "oad_lt_net", "visa_grants", "student_commencements",
-            "student_enrolments", "nom_preliminary", "nom_revised", "nom_final")
+            "oad_lt_net", "visa_grants",
+            "nom_preliminary", "nom_revised", "nom_final")
   for (m in must) if (!m %in% names(out)) out[[m]] <- NA_real_
   out[, must]
 }

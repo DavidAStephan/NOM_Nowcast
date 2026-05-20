@@ -42,7 +42,6 @@ Education and BITRE publish, and we estimate $\pi_{c,t}$ indirectly.
 | ABS OAD (cat. 3401.0)                   | monthly  | ~35        | latent flow target |
 | ABS NOM (cat. 3101.0)                   | quarterly| ~183       | modelling target |
 | DHA visa grants                         | monthly  | ~45        | leading indicator |
-| Dept Education student commencements    | monthly  | ~35        | student leading indicator |
 | BITRE international airline activity    | monthly  | ~60        | capacity constraint |
 | DHA TWH / WHM aggregates                | quarterly| ~45        | cross-validation |
 
@@ -54,7 +53,6 @@ All sources are public.
   month $t$.
 - $D^{OAD,LT}_{c,t}$ — analogous departures.
 - $V_{c,t}$ — DHA visa grants.
-- $E_t$ — total student enrolments.
 - $\mathrm{NOM}^{ABS}_{c,q}$ — ABS NOM estimate, category $c$, quarter
   $q$, latest vintage.
 - $\widehat{\pi}_{c,t}$ — estimated classification probability.
@@ -294,7 +292,6 @@ grid search available as a diagnostic via
   jointly estimated.
 - **True quarterly disaggregation** of DHA visa grants instead of
   equal-weight broadcast across FY quarters.
-- **Student enrolments block** on the student-category sub-fit.
 - **Cross-category partial pooling** of the trend-innovation
   variances $\sigma^2_{u,c}$.
 

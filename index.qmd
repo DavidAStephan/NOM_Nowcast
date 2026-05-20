@@ -20,7 +20,7 @@ panel <- tryCatch(targets::tar_read(panel_quarterly), error = function(e) NULL)
 if (is.null(panel) || !nrow(panel)) {
   oad <- fetch_oad(cfg, asof); nom <- fetch_nom(cfg, asof); vg <- fetch_visa_grants(cfg, asof)
   panel <- build_quarterly_panel(clean_oad(oad, cfg), clean_nom(nom, cfg),
-                                 clean_visa_grants(vg, cfg), empty_students_clean(), cfg)
+                                 clean_visa_grants(vg, cfg), cfg)
 }
 fit_multi <- fit_kalman_multi(panel, cfg)
 fc_multi  <- forecast_kalman_multi(fit_multi, asof, cfg)

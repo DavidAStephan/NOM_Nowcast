@@ -8,8 +8,6 @@ make_panel <- function() {
     oad_lt_departures = NA_real_,
     oad_lt_net = NA_real_,
     visa_grants = NA_real_,
-    student_commencements = NA_real_,
-    student_enrolments = NA_real_,
     nom_preliminary = NA_real_,
     nom_revised = NA_real_,
     nom_final = c(rnorm(length(periods), 35000, 4000),
