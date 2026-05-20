@@ -16,6 +16,8 @@ on:
       - "_targets.R"
       - "data/backtest_scored.rds"
       - "data/backtest_meta.rds"
+      - "data/headline_bayes.rds"
+      - "data/headline_bayes_meta.rds"
       - ".github/workflows/render.yml"
 
 permissions:

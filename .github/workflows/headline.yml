@@ -1,0 +1,122 @@
+name: Refresh headline (Bayes)
+
+# Fits the production headline using bayes_gamma and commits the
+# snapshot back to main. Triggered manually or on a weekly cadence.
+# The main render workflow reads `data/headline_bayes.rds`; it
+# does NOT install cmdstanr or run HMC itself.
+
+on:
+  schedule:
+    - cron: "30 5 * * 1"        # Mondays 05:30 UTC ~= 15:30 AEST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "headline-refresh"
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_LIBS_USER: ${{ github.workspace }}/R-lib
+      RENV_CONFIG_AUTOLOADER_ENABLED: "FALSE"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libglpk40 libxml2-dev libssl-dev libcurl4-openssl-dev \
+            libsodium-dev libicu-dev g++ make
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: true
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-jammy-${{ runner.os }}-bayes-v1-${{ hashFiles('.github/workflows/headline.yml') }}
+          restore-keys: |
+            r-jammy-${{ runner.os }}-bayes-v1-
+
+      - name: Cache cmdstan toolchain
+        id: cmdstan-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cmdstan
+          key: cmdstan-2.39.0-${{ runner.os }}-jammy
+
+      - name: Install R packages (RSPM Linux binaries + cmdstanr)
+        run: |
+          dir.create(Sys.getenv("R_LIBS_USER"), showWarnings = FALSE, recursive = TRUE)
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          options(
+            repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"),
+            Ncpus = 2,
+            install.packages.compile.from.source = "never",
+            install.packages.check.source = "no",
+            HTTPUserAgent = sprintf(
+              "R/%s R (%s)", getRversion(),
+              paste(getRversion(), R.version$platform, R.version$arch,
+                    R.version$os, sep = "/")
+            )
+          )
+          pkgs <- c(
+            "config", "DBI", "dplyr", "duckdb", "fixest", "fs",
+            "ggplot2", "glue", "gt", "httr2", "jsonlite", "KFAS",
+            "lubridate", "purrr", "readabs", "readr", "readxl",
+            "rvest", "scales", "stringr", "tarchetypes", "targets",
+            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass",
+            "posterior", "distributional"
+          )
+          missing <- pkgs[!vapply(pkgs, requireNamespace,
+                                  logical(1), quietly = TRUE)]
+          if (length(missing)) install.packages(missing)
+          # cmdstanr lives on the Stan r-universe; install from there.
+          if (!requireNamespace("cmdstanr", quietly = TRUE)) {
+            install.packages("cmdstanr",
+              repos = c("https://stan-dev.r-universe.dev", getOption("repos")))
+          }
+        shell: Rscript {0}
+
+      - name: Install cmdstan toolchain (if not cached)
+        if: steps.cmdstan-cache.outputs.cache-hit != 'true'
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          cmdstanr::check_cmdstan_toolchain(fix = TRUE)
+          cmdstanr::install_cmdstan(cores = 4)
+        shell: Rscript {0}
+
+      - name: Set cmdstan path
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          cmdstanr::set_cmdstan_path("~/.cmdstan/cmdstan-2.39.0")
+        shell: Rscript {0}
+
+      - name: Run refresh_headline_bayes.R
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          Rscript scripts/refresh_headline_bayes.R
+
+      - name: Commit refreshed snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet data/headline_bayes.rds data/headline_bayes_meta.rds 2>/dev/null; then
+            echo "No headline changes to commit."
+            exit 0
+          fi
+          git add data/headline_bayes.rds data/headline_bayes_meta.rds
+          git commit -m "Refresh Bayesian headline snapshot ($(date -u +%Y-%m-%d))"
+          git push

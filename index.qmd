@@ -29,7 +29,26 @@ fc_uni    <- forecast_kalman_univariate(fits_uni, asof, cfg)
 pi_emp    <- estimate_pi_empirical(panel, cfg)
 pi_sm     <- smooth_pi(pi_emp, cfg)
 
-headline <- build_nowcast_headline_from_multi(fc_multi, cfg)
+kalman_headline <- build_nowcast_headline_from_multi(fc_multi, cfg)
+
+# Phase 3 v0.4: prefer the bayes_gamma headline when a fresh snapshot
+# is committed (regenerated locally via scripts/refresh_headline_bayes.R).
+# Falls back to the Kalman headline when no snapshot is present so the
+# render workflow stays Stan-free.
+bayes_snapshot_path <- "data/headline_bayes.rds"
+bayes_meta_path     <- "data/headline_bayes_meta.rds"
+has_bayes_headline <- file.exists(bayes_snapshot_path)
+bayes_headline_meta <- if (file.exists(bayes_meta_path)) readRDS(bayes_meta_path) else NULL
+
+headline <- if (has_bayes_headline) {
+  readRDS(bayes_snapshot_path) |>
+    dplyr::select("period", "nom_mean", "nom_se",
+                  "lower_80", "upper_80", "lower_95", "upper_95")
+} else kalman_headline
+
+headline_model_label <- if (has_bayes_headline) {
+  "Bayesian state-space (Phase 3 v0.2) with Gamma-weighted visa lag"
+} else "multivariate state-space Kalman filter (Phase 2 v4.0)"
 
 # Identify the current quarter and the most recent ABS-published quarter
 asof_q  <- nn_quarter_start(asof - lubridate::days(1L))
@@ -74,8 +93,8 @@ Arrivals and Departures and quarterly population components from the ABS, and
 Department of Home Affairs visa-grant statistics via data.gov.au.
 
 The headline number above is the model's nowcast for the quarter ABS hasn't
-yet published. The model is a multivariate state-space Kalman filter
-(Phase 2 v4.0) — see [Methodology](methodology.qmd) for the equations and
+yet published. The model is a `{r} headline_model_label` — see
+[Methodology](methodology.qmd) for the equations and
 [Backtest](backtest.qmd) for honest performance numbers.
 
 ## Recent quarters
@@ -172,12 +191,19 @@ cat(sprintf("- Panel coverage:      %s to %s (%d quarterly observations × %d ca
             nn_quarter_label(periods_span[1L], sep = "-"),
             nn_quarter_label(periods_span[2L], sep = "-"),
             length(unique(panel$period)), length(unique(panel$category))))
-cat(sprintf("- Model:               %s\n", fit_multi$kind %||% "kalman_multi"))
+cat(sprintf("- Headline model:      %s\n",
+            if (has_bayes_headline) "bayes_gamma (HMC, Phase 3 v0.2)" else
+              fit_multi$kind %||% "kalman_multi"))
+if (has_bayes_headline && !is.null(bayes_headline_meta)) {
+  cat(sprintf("- Bayes snapshot:      refreshed %s (fit took %.1fs)\n",
+              format(bayes_headline_meta$refreshed_at, "%d %B %Y %H:%M %Z"),
+              bayes_headline_meta$elapsed_seconds))
+}
 cat(sprintf("- Alpha_v offset:      %.3f (log-gap OAD-arrivals vs lagged visa-grants)\n",
             fit_multi$alpha_v))
 cat(sprintf("- Alpha_n offset:      %.3f (log-gap OAD-arrivals vs NOM)\n",
             fit_multi$alpha_n))
 if (!is.null(gl_w)) {
-  cat("- Gamma lag weights:   ", paste(round(gl_w, 3), collapse = ", "), "\n")
+  cat("- Kalman gamma weights: ", paste(round(gl_w, 3), collapse = ", "), "\n")
 }
 ```
