@@ -25,8 +25,9 @@ cfg <- config::get(file = "config.yml")
 # Off by default so a refresh stays cheap; the Bayes fit window is
 # controlled by cfg$models$bayes_headline$backtest_window.
 if (identical(Sys.getenv("NN_REFRESH_BAYES"), "1")) {
-  cfg$models$bayes_headline$enabled <- TRUE
-  cfg$models$bayes_gamma$enabled    <- TRUE
+  cfg$models$bayes_headline$enabled       <- TRUE
+  cfg$models$bayes_gamma$enabled          <- TRUE
+  cfg$models$bayes_gamma_learned$enabled  <- TRUE
   cli::cli_alert_info("Bayesian models: enabled (last {cfg$models$bayes_headline$backtest_window %||% 12} quarters of grid)")
 } else {
   cli::cli_alert_info("Bayesian models: disabled (set NN_REFRESH_BAYES=1 to include)")

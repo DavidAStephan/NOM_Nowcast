@@ -177,6 +177,18 @@ run_backtest <- function(asof_date, db_path, cfg) {
              })
   } else tibble::tibble()
 
+  # Phase 3 v0.3 — Gamma-lag with learned (alpha, beta).
+  glcfg <- cfg$models$bayes_gamma_learned %||% list(enabled = FALSE)
+  bgl_window <- glcfg$backtest_window %||% 12L
+  bayes_gamma_learned_fc <- if (isTRUE(glcfg$enabled %||% FALSE) &&
+                              asof_date >= bayes_window_floor(bgl_window)) {
+    tryCatch(fit_bayes_gamma_learned(panel, asof_date, cfg),
+             error = function(e) {
+               nn_warn("bayes_gamma_learned failed at {format(asof_date)}: {conditionMessage(e)}")
+               tibble::tibble()
+             })
+  } else tibble::tibble()
+
   horizons <- cfg$backtest$horizons %||% c(-2, -1, 0, 1)
   ref_q <- nn_quarter_start(asof_date - lubridate::days(1))
 
@@ -230,6 +242,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
   if (nrow(bayes_gamma_fc) > 0L) {
     rows <- c(rows, list(
       bayes_gamma_fc |>
+        dplyr::mutate(category = "total") |>
+        dplyr::semi_join(keeper, by = "period")
+    ))
+  }
+  if (nrow(bayes_gamma_learned_fc) > 0L) {
+    rows <- c(rows, list(
+      bayes_gamma_learned_fc |>
         dplyr::mutate(category = "total") |>
         dplyr::semi_join(keeper, by = "period")
     ))
