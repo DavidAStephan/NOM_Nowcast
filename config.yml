@@ -161,6 +161,39 @@ default:
         grid_search: true
         alpha_grid: [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
         beta_grid:  [0.5, 1.0, 1.5, 2.0]
+    bayes_headline:
+      # Phase 3 v0.1 — Bayesian state-space on total NOM only, same
+      # observation structure as kalman_multi v2.0 but with HMC
+      # posterior instead of MLE. Headline-only for now; per-category
+      # hierarchy is Phase 3 v0.2. Disabled by default because cmdstan
+      # needs to be installed once and each fit takes ~30s.
+      enabled: false
+      chains: 2
+      iter_warmup: 300
+      iter_sample: 300
+      adapt_delta: 0.9
+      max_treedepth: 10
+      seed: 20260520
+      forecast_horizons: 4
+      pre_nom_quarters: 8
+      # Backtest control: only fit Bayes on the most recent N as-of
+      # dates. Each Bayes fit is ~30-40s; setting backtest_window to
+      # 12 (3 years) keeps refresh time around 5-10 min while still
+      # giving a meaningful comparison vs the Kalman baseline.
+      backtest_window: 12
+      # Weakly-informative priors. Tunable but the defaults bracket
+      # the historical NOM range (log(60k) ~ 11; quarterly NOM has
+      # typically been between exp(10)=22k and exp(12)=160k).
+      priors:
+        mu0_loc:           11.0
+        mu0_scale:          1.5
+        slope0_scale:       0.1
+        sigma_obs_scale:    0.3
+        sigma_state_scale:  0.1
+        alpha_scale:        1.0
+        phi_loc:            0.85
+        phi_conc:          10
+
     kalman:
       # Seasonal period at the quarterly modelling frequency. 4 = annual
       # seasonality in quarters. The legacy default of 12 (a monthly

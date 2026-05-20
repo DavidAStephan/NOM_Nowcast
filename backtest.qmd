@@ -40,6 +40,7 @@ Models compared:
 
 | Model | What it uses |
 |-------|--------------|
+| `bayes_headline` | **Phase 3 v0.1.** Same trivariate observation structure as `kalman_multi_v2` but fit via HMC in Stan, so the credible intervals come from proper posterior sampling instead of treating MLE parameters as fixed. Headline-only; per-category hierarchy is the next Phase 3 step. Only fit on the last `cfg$models$bayes_headline$backtest_window` (default 12) quarters of the backtest grid. |
 | `kalman_multi_v2` | Multivariate Kalman: OAD + visa grants + NOM as joint observations on a shared latent log-arrivals state. Phase 2 v4.0 with Gamma-lag state augmentation. |
 | `kalman_multi_pi` | Same multi-SSM fit, but headline assembled via the empirical-π route instead of the direct NOM observation. |
 | `kalman_v1` | Phase 1 univariate Kalman per category, π-based headline. |

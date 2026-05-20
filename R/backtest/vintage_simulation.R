@@ -147,6 +147,21 @@ run_backtest <- function(asof_date, db_path, cfg) {
   bridge_fits <- tryCatch(benchmark_bridge(panel, cfg), error = function(e) list())
   bridge_fc <- if (length(bridge_fits)) forecast_bridge(bridge_fits, panel, cfg) else tibble::tibble()
 
+  # Phase 3 v0.1 — Bayesian headline. Each fit is ~20s; only run on
+  # the most recent `backtest_window` quarters of the grid to keep
+  # the refresh cheap.
+  bcfg <- cfg$models$bayes_headline %||% list(enabled = FALSE)
+  bayes_window <- bcfg$backtest_window %||% 12L
+  bayes_cutoff <- nn_quarter_start(Sys.Date()) - lubridate::days(1L)
+  bayes_cutoff <- nn_quarter_start(bayes_cutoff) - months(3L * (bayes_window - 1L))
+  bayes_fc <- if (isTRUE(bcfg$enabled %||% FALSE) && asof_date >= bayes_cutoff) {
+    tryCatch(fit_bayes_headline(panel, asof_date, cfg),
+             error = function(e) {
+               nn_warn("bayes_headline failed at {format(asof_date)}: {conditionMessage(e)}")
+               tibble::tibble()
+             })
+  } else tibble::tibble()
+
   horizons <- cfg$backtest$horizons %||% c(-2, -1, 0, 1)
   ref_q <- nn_quarter_start(asof_date - lubridate::days(1))
 
@@ -187,6 +202,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
     rows <- c(rows, list(
       head_pi |>
         dplyr::mutate(model = "kalman_multi_pi", category = "total") |>
+        dplyr::semi_join(keeper, by = "period")
+    ))
+  }
+  if (nrow(bayes_fc) > 0L) {
+    rows <- c(rows, list(
+      bayes_fc |>
+        dplyr::mutate(category = "total") |>
         dplyr::semi_join(keeper, by = "period")
     ))
   }

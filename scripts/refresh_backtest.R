@@ -13,12 +13,23 @@ suppressPackageStartupMessages({
   library(tarchetypes)
   library(dplyr)
   library(tibble)
+  library(lubridate)
 })
 
 files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
 for (f in files) sys.source(f, envir = globalenv())
 
 cfg <- config::get(file = "config.yml")
+
+# Enable the Bayesian model when NN_REFRESH_BAYES=1 in the environment.
+# Off by default so a refresh stays cheap; the Bayes fit window is
+# controlled by cfg$models$bayes_headline$backtest_window.
+if (identical(Sys.getenv("NN_REFRESH_BAYES"), "1")) {
+  cfg$models$bayes_headline$enabled <- TRUE
+  cli::cli_alert_info("Bayesian model: enabled (last {cfg$models$bayes_headline$backtest_window %||% 12} quarters of grid)")
+} else {
+  cli::cli_alert_info("Bayesian model: disabled (set NN_REFRESH_BAYES=1 to include)")
+}
 
 # Use a throwaway DuckDB so we don't litter the repo's vintage store.
 cfg$paths$duckdb <- tempfile(fileext = ".duckdb")

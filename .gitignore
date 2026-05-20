@@ -29,11 +29,11 @@ data/processed/*
 !data/processed/.gitkeep
 .cache/
 
-# Stan compiled artifacts
-stan/*.exe
-stan/*.o
-stan/*.hpp
-stan/*.so
+# Stan compiled artifacts. cmdstanr produces an extension-less
+# executable next to the .stan source on macOS/Linux. Ignore
+# everything under stan/ except the .stan source files themselves.
+stan/*
+!stan/*.stan
 
 # Reports build artifacts
 reports/*_files/
