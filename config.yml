@@ -161,6 +161,35 @@ default:
         grid_search: true
         alpha_grid: [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
         beta_grid:  [0.5, 1.0, 1.5, 2.0]
+    bayes_gamma:
+      # Phase 3 v0.2 — bayes_headline extended with a Gamma-weighted
+      # forward lag from visa grants to arrivals (parallels kalman_v4).
+      # Each visa observation loads on a log-sum-exp of future
+      # latent log-arrivals weighted by a Gamma(alpha, beta) pmf.
+      enabled: false
+      chains: 2
+      iter_warmup: 300
+      iter_sample: 300
+      adapt_delta: 0.9
+      max_treedepth: 10
+      seed: 20260520
+      forecast_horizons: 4
+      pre_nom_quarters: 8
+      backtest_window: 12
+      gamma_lag:
+        alpha: 2.0
+        beta:  1.0
+        k_max: 4
+      priors:
+        mu0_loc:           11.0
+        mu0_scale:          1.5
+        slope0_scale:       0.1
+        sigma_obs_scale:    0.3
+        sigma_state_scale:  0.1
+        alpha_scale:        1.0
+        phi_loc:            0.85
+        phi_conc:          10
+
     bayes_headline:
       # Phase 3 v0.1 — Bayesian state-space on total NOM only, same
       # observation structure as kalman_multi v2.0 but with HMC

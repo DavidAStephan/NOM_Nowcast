@@ -26,9 +26,10 @@ cfg <- config::get(file = "config.yml")
 # controlled by cfg$models$bayes_headline$backtest_window.
 if (identical(Sys.getenv("NN_REFRESH_BAYES"), "1")) {
   cfg$models$bayes_headline$enabled <- TRUE
-  cli::cli_alert_info("Bayesian model: enabled (last {cfg$models$bayes_headline$backtest_window %||% 12} quarters of grid)")
+  cfg$models$bayes_gamma$enabled    <- TRUE
+  cli::cli_alert_info("Bayesian models: enabled (last {cfg$models$bayes_headline$backtest_window %||% 12} quarters of grid)")
 } else {
-  cli::cli_alert_info("Bayesian model: disabled (set NN_REFRESH_BAYES=1 to include)")
+  cli::cli_alert_info("Bayesian models: disabled (set NN_REFRESH_BAYES=1 to include)")
 }
 
 # Use a throwaway DuckDB so we don't litter the repo's vintage store.
