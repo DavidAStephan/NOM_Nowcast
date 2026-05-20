@@ -151,6 +151,13 @@ generated quantities {
   // t <= T_obs (one-sided, using observations up to t), predicted
   // for t > T_obs. This lets the backtest score historical quarters
   // as well as future forecast horizons.
+  //
+  // v0.7 explored an RTS smoother here (two-sided posterior using
+  // all observations). The smoother is mathematically correct but
+  // *empirically worse* on this panel: the model has a ~10k systematic
+  // downward bias in the filter, and the smoother amplifies it to
+  // ~29k by propagating future observations backward through F^{-1}.
+  // Kept as a logged negative result; see Phase 3 commit history.
   vector[T_obs + H] nom_hat_log_mean;
   vector[T_obs + H] nom_hat_log_sd;
   vector[T_obs + H] nom_hat;
@@ -191,7 +198,6 @@ generated quantities {
       nom_hat_log_sd[t]   = sqrt(var_filt + square(sigma_nom));
       nom_hat[t] = exp(nom_hat_log_mean[t] + 0.5 * var_filt);
     }
-    // Forecast forward
     for (h in 1:H) {
       x = F * x;
       P = F * P * F' + Q;
