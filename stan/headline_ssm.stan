@@ -1,5 +1,16 @@
 // Phase 3 v0.1 — Bayesian state-space on headline (total) NOM.
 //
+// Parameterisation note: NCP on state innovations. The joint
+// posterior has a sigma_oad ↔ sigma_mu identifiability funnel
+// (corr ~ -0.7) that saturates NUTS' max_treedepth. Centred
+// parameterisation breaks convergence on sigma_beta; dense
+// mass matrix gets stuck across modes. NCP + adapt_delta 0.95
+// + iter_warmup 500 + iter_sampling 500 gets divergences down
+// to ~1% with ESS ~100 on the slow parameters — usable, with
+// the treedepth warning being intrinsic cost-of-funnel.
+// Proper fix (a Phase 3 v0.6 follow-up) is to marginalise the
+// latent states by writing the Kalman filter directly in Stan.
+//
 // Same observation structure as fit_kalman_multi_one but with proper
 // posterior sampling instead of an MLE fit. One latent log-arrivals
 // state μ_t with a damped local-linear trend; three observation

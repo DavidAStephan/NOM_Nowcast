@@ -1,31 +1,29 @@
 // Phase 3 v0.2 — Bayesian headline SSM with Gamma-lag visa observation.
 //
-// Same architecture as headline_ssm.stan plus a forward Gamma-lag
-// on the visa-grants observation row, matching kalman_v4. Visa
-// grants observed at quarter t load on a log-sum-exp of arrivals
-// at quarters t+1..t+K_max with weights w_k from a Gamma(alpha,
-// beta) pmf:
+// Architecture: damped local-linear trend on a single latent log-arrivals
+// state mu_t; trivariate observations on log scale; visa-grants row
+// loads on a log-sum-exp of forward-lagged mu's via fixed Gamma weights.
 //
-//   y_visa[t] = log(sum_k w_k * exp(mu[t + k])) + alpha_v + epsilon_v
-//
-// This propagates the visa signal forward into the latent state at
-// future horizons — exactly what we want for the h=0 nowcast since
-// NOM publishes with a ~6-month lag but visa grants are observed
-// quarterly.
-//
-// Non-centered transitions, weakly informative priors.
+// Parameterisation: non-centred on the state innovations (mu_raw,
+// beta_raw ~ std_normal). The joint posterior has a sigma_oad ↔
+// sigma_mu identifiability funnel (correlation ~ -0.7) so HMC pays
+// for it in treedepth saturation; but switching to a centred
+// parameterisation breaks convergence on sigma_beta — so NCP it
+// stays.  The driver script should run with adapt_delta >= 0.9 and
+// iter_warmup >= 500 so the mass-matrix adaptation has enough room
+// to find a good metric for the funnel.
 
 data {
-  int<lower=1> T;                          // total panel length (obs + h_max + K_max)
-  int<lower=1> T_obs;                      // last observed period
-  int<lower=1> n_w;                        // number of Gamma weights (k=0..K_max => n_w = K_max + 1)
+  int<lower=1> T;
+  int<lower=1> T_obs;
+  int<lower=1> n_w;
   array[T_obs] real y_oad;
   array[T_obs] int<lower=0, upper=1> has_oad;
   array[T_obs] real y_visa;
   array[T_obs] int<lower=0, upper=1> has_visa;
   array[T_obs] real y_nom;
   array[T_obs] int<lower=0, upper=1> has_nom;
-  vector<lower=0, upper=1>[n_w] gamma_weights;    // normalised pmf, supplied from R
+  vector<lower=0, upper=1>[n_w] gamma_weights;
   real mu0_loc;
   real<lower=0> mu0_scale;
   real<lower=0> slope0_scale;
@@ -86,7 +84,6 @@ model {
       if (has_oad[t])  y_oad[t] ~ normal(mu[t],            sigma_oad);
       if (has_nom[t])  y_nom[t] ~ normal(mu[t] + alpha_n,  sigma_nom);
       if (has_visa[t] && t + n_w - 1 <= T) {
-        // visa at t loads on mu[t + 0], mu[t + 1], ..., mu[t + n_w - 1]
         vector[n_w] terms;
         for (k in 1:n_w) terms[k] = log_w[k] + mu[t + k - 1];
         y_visa[t] ~ normal(log_sum_exp(terms) + alpha_v, sigma_visa);
