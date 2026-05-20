@@ -14,6 +14,8 @@ on:
       - "custom.scss"
       - "config.yml"
       - "_targets.R"
+      - "data/backtest_scored.rds"
+      - "data/backtest_meta.rds"
       - ".github/workflows/render.yml"
 
 permissions:
