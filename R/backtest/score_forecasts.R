@@ -9,6 +9,11 @@
 #'   * `hit_rate_qoq`    — directional accuracy of QoQ change
 #'   * `log_score`       — only computed when SE is available (Phase 1
 #'                         provides this; benchmarks don't)
+#'   * `cov80`           — empirical coverage of the 80% credible
+#'                         interval (fraction of `nom_truth` values
+#'                         in `[lower_80, upper_80]`). Calibrated
+#'                         models should have `cov80` ≈ 0.80.
+#'   * `cov95`           — analogous for the 95% interval.
 #'
 #' This is the project's headline performance summary. The structural
 #' model needs to outperform `model == "abs_preliminary"` to be useful.
@@ -80,8 +85,18 @@ score_backtest <- function(backtest_runs, db_path, cfg) {
       hit_rate_qoq   = hit_rate(.data$nom_mean, .data$nom_truth, .data$period),
       log_score      = mean(log_score_point(.data$nom_mean, .data$nom_se, .data$nom_truth),
                             na.rm = TRUE),
+      cov80          = coverage(.data$lower_80, .data$upper_80, .data$nom_truth),
+      cov95          = coverage(.data$lower_95, .data$upper_95, .data$nom_truth),
       .groups = "drop"
     )
+}
+
+#' Empirical coverage of a predictive interval
+#' @keywords internal
+coverage <- function(lo, hi, y) {
+  ok <- !is.na(lo) & !is.na(hi) & !is.na(y)
+  if (!any(ok)) return(NA_real_)
+  mean(y[ok] >= lo[ok] & y[ok] <= hi[ok])
 }
 
 #' Look up the latest-vintage final NOM for every `(period, category)`
@@ -184,6 +199,7 @@ empty_scored <- function() {
     model = character(), horizon = integer(), regime = character(),
     category = character(), n = integer(), rmse = numeric(),
     mae = numeric(), bias = numeric(), rmse_vs_prelim = numeric(),
-    hit_rate_qoq = numeric(), log_score = numeric()
+    hit_rate_qoq = numeric(), log_score = numeric(),
+    cov80 = numeric(), cov95 = numeric()
   )
 }

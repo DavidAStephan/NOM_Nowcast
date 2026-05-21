@@ -60,23 +60,33 @@ on every push; the backtest refreshes on demand or on a slower cadence.
 
 ```{r headline-table}
 #| eval: !expr has_backtest
-scored |>
+has_calib <- all(c("cov80", "cov95") %in% names(scored))
+agg <- scored |>
   dplyr::filter(category == "total") |>
   dplyr::group_by(model, horizon) |>
   dplyr::summarise(
-    n    = sum(n,   na.rm = TRUE),
-    RMSE = mean(rmse, na.rm = TRUE),
-    MAE  = mean(mae,  na.rm = TRUE),
-    Bias = mean(bias, na.rm = TRUE),
+    n      = sum(n,   na.rm = TRUE),
+    RMSE   = mean(rmse, na.rm = TRUE),
+    MAE    = mean(mae,  na.rm = TRUE),
+    Bias   = mean(bias, na.rm = TRUE),
+    LogS   = mean(log_score, na.rm = TRUE),
+    Cov80  = if (has_calib) mean(cov80, na.rm = TRUE) else NA_real_,
+    Cov95  = if (has_calib) mean(cov95, na.rm = TRUE) else NA_real_,
     .groups = "drop"
   ) |>
   dplyr::filter(is.finite(RMSE)) |>
   dplyr::arrange(horizon, RMSE) |>
   dplyr::mutate(Horizon = paste0("h = ", horizon)) |>
-  dplyr::select(Horizon, Model = model, n, RMSE, MAE, Bias) |>
+  dplyr::select(Horizon, Model = model, n, RMSE, MAE, Bias, LogS, Cov80, Cov95)
+
+agg |>
   gt::gt(groupname_col = "Horizon") |>
   gt::fmt_number(columns = c("RMSE", "MAE", "Bias"),
                  decimals = 0, use_seps = TRUE) |>
+  gt::fmt_number(columns = "LogS", decimals = 2) |>
+  gt::fmt_percent(columns = c("Cov80", "Cov95"), decimals = 0) |>
+  gt::sub_missing(missing_text = "—") |>
+  gt::cols_label(LogS = "Log score", Cov80 = "80% cov", Cov95 = "95% cov") |>
   gt::tab_options(table.font.size = "small") |>
   gt::tab_source_note(gt::md(
     paste0(
@@ -91,7 +101,9 @@ scored |>
       else "",
       ". Refreshed ",
       if (!is.null(meta)) format(meta$refreshed_at, "%d %B %Y") else "—",
-      ". RMSE / MAE in persons. Lower is better. ",
+      ". RMSE / MAE / Bias in persons. ",
+      "**Log score** is the average per-observation log-likelihood of the truth under the model's predictive distribution (higher is better — proper scoring rule). ",
+      "**Cov80 / Cov95** are the empirical coverage of the model's 80% / 95% credible intervals; well-calibrated models should sit at 80% / 95%. ",
       "Models are sorted within each horizon by RMSE."
     )
   ))
@@ -109,6 +121,46 @@ cat(
   ":::\n",
   sep = ""
 )
+```
+
+## Calibration
+
+How often does the truth actually fall inside each model's 80% and
+95% credible intervals? A well-calibrated model should have an 80%
+interval that contains the truth 80% of the time, and similarly
+for 95%. Materially below those targets means the model is
+overconfident; materially above means the intervals are too wide
+(under-confident).
+
+```{r calibration-plot}
+#| eval: !expr has_backtest
+library(ggplot2)
+calib <- scored |>
+  dplyr::filter(category == "total", is.finite(cov80) | is.finite(cov95)) |>
+  dplyr::group_by(model, horizon) |>
+  dplyr::summarise(cov80 = mean(cov80, na.rm = TRUE),
+                   cov95 = mean(cov95, na.rm = TRUE),
+                   .groups = "drop") |>
+  tidyr::pivot_longer(c("cov80", "cov95"),
+                      names_to = "interval", values_to = "coverage") |>
+  dplyr::mutate(
+    nominal  = ifelse(interval == "cov80", 0.80, 0.95),
+    interval = ifelse(interval == "cov80", "80%", "95%")
+  )
+ggplot(calib, aes(x = horizon, y = coverage, colour = model)) +
+  geom_hline(aes(yintercept = nominal), linetype = 2, colour = "grey50") +
+  geom_point(size = 3) +
+  geom_line(aes(group = model)) +
+  facet_wrap(~ interval, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = -2:1) +
+  labs(x = "Horizon (quarters from as-of date)",
+       y = "Empirical coverage",
+       title = "Credible-interval calibration",
+       subtitle = "Dashed line is the nominal coverage (target).") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
 ```
 
 ## RMSE by horizon

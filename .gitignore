@@ -26,6 +26,7 @@ data/vintages/*
 data/processed/*
 !data/raw/.gitkeep
 !data/vintages/.gitkeep
+!data/vintages/nom_history.csv
 !data/processed/.gitkeep
 .cache/
 

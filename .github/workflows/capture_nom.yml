@@ -1,0 +1,93 @@
+name: Capture NOM vintage
+
+# Weekly snapshot of ABS NOM as it stands today. Appends one row per
+# (period, category) into data/vintages/nom_history.csv, building up
+# a real vintage history over time. Once the CSV has a few months
+# of weekly snapshots, the backtest can move from pseudo-real-time
+# to a proper vintage-aware evaluation.
+
+on:
+  schedule:
+    - cron: "0 22 * * 1"        # Mondays 22:00 UTC ~= 08:00 AEST Tuesday
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "nom-vintage-capture"
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_LIBS_USER: ${{ github.workspace }}/R-lib
+      RENV_CONFIG_AUTOLOADER_ENABLED: "FALSE"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libglpk40 libxml2-dev libssl-dev libcurl4-openssl-dev \
+            libsodium-dev libicu-dev
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4"
+          use-public-rspm: true
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-jammy-${{ runner.os }}-v3-${{ hashFiles('.github/workflows/render.yml') }}
+          restore-keys: |
+            r-jammy-${{ runner.os }}-v3-
+
+      - name: Install R packages
+        run: |
+          dir.create(Sys.getenv("R_LIBS_USER"), showWarnings = FALSE, recursive = TRUE)
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          options(
+            repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"),
+            Ncpus = 2,
+            install.packages.compile.from.source = "never",
+            install.packages.check.source = "no",
+            HTTPUserAgent = sprintf(
+              "R/%s R (%s)", getRversion(),
+              paste(getRversion(), R.version$platform, R.version$arch,
+                    R.version$os, sep = "/")
+            )
+          )
+          pkgs <- c("config", "dplyr", "fs", "glue", "httr2", "jsonlite",
+                    "lubridate", "purrr", "readabs", "readr", "readxl",
+                    "rvest", "stringr", "tibble", "tidyr", "yaml",
+                    "cli", "digest")
+          missing <- pkgs[!vapply(pkgs, requireNamespace,
+                                  logical(1), quietly = TRUE)]
+          if (length(missing)) install.packages(missing)
+        shell: Rscript {0}
+
+      - name: Run capture_nom_vintage.R
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          Rscript scripts/capture_nom_vintage.R
+
+      - name: Commit appended vintage
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet data/vintages/nom_history.csv 2>/dev/null; then
+            echo "No new vintage rows to commit."
+            exit 0
+          fi
+          git add data/vintages/nom_history.csv
+          git commit -m "Capture NOM vintage ($(date -u +%Y-%m-%d))"
+          git push
