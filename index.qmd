@@ -47,7 +47,7 @@ headline <- if (has_bayes_headline) {
 } else kalman_headline
 
 headline_model_label <- if (has_bayes_headline) {
-  "Bayesian state-space (Phase 3 v0.2) with Gamma-weighted visa lag"
+  "Bayesian state-space (Phase 3 v0.6) with Kalman-filter likelihood"
 } else "multivariate state-space Kalman filter (Phase 2 v4.0)"
 
 # Identify the current quarter and the most recent ABS-published quarter
@@ -192,7 +192,7 @@ cat(sprintf("- Panel coverage:      %s to %s (%d quarterly observations × %d ca
             nn_quarter_label(periods_span[2L], sep = "-"),
             length(unique(panel$period)), length(unique(panel$category))))
 cat(sprintf("- Headline model:      %s\n",
-            if (has_bayes_headline) "bayes_gamma (HMC, Phase 3 v0.2)" else
+            if (has_bayes_headline) "bayes_kalman (HMC, Phase 3 v0.6)" else
               fit_multi$kind %||% "kalman_multi"))
 if (has_bayes_headline && !is.null(bayes_headline_meta)) {
   cat(sprintf("- Bayes snapshot:      refreshed %s (fit took %.1fs)\n",

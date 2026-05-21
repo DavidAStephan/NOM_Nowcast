@@ -330,8 +330,10 @@ $\Gamma(\alpha, \beta)$ pmf evaluated at $k = 0, \dots, K$ and
 normalised. With the default $(\alpha, \beta) = (2, 1)$,
 $K = 4$, this matches the Phase 2 v4.0 model architecturally.
 
-bayes_gamma is the **current production headline** — the landing
-page reads from a snapshot built by `scripts/refresh_headline_bayes.R`.
+bayes_gamma served as the production headline through v0.4–v0.8.
+It was superseded in v0.9 by `bayes_kalman` once the calibration
+analysis showed bayes_gamma is significantly over-confident in
+post-COVID quarters.
 
 ### v0.3 — `bayes_gamma_learned`
 
@@ -370,9 +372,28 @@ Two model trade-offs:
 
 Backtest result is materially better at backcasts:
 $h = -1$ RMSE drops from 36.7k (`kalman_multi_v2`) to **34.0k**
-in the post-COVID regime. At $h = 0$ (the actual nowcast quarter),
-`bayes_gamma` still leads slightly (63.8k vs 64.9k), which is why
-the production headline stays on bayes_gamma for now.
+in the post-COVID regime. At $h = 0$ point RMSE is essentially
+tied with `bayes_gamma` (64.9k vs 63.8k), but on the proper
+scoring rule (log-score) and on credible-interval calibration
+`bayes_kalman` dominates by a wide margin — see the next section.
+
+### v0.8–v0.9 — calibration + promotion
+
+The `bayes_*` models output full predictive distributions, not
+just point estimates. Adding empirical-coverage columns to the
+backtest scorer (v0.8) revealed that the Kalman MLE and the
+latent-state Bayes variants are significantly over-confident in
+the post-COVID period:
+
+| model            | h=0 cov80 | h=0 log-score |
+|------------------|-----------|---------------|
+| `kalman_multi_v2`| 0%        | -26,839       |
+| `bayes_gamma`    | 18%       | -39           |
+| `bayes_kalman`   | **45%**   | **-14**       |
+
+`bayes_kalman` was promoted to the production headline (v0.9) on
+the strength of this calibration result, even though `bayes_gamma`
+is marginally lower on point RMSE.
 
 ### v0.7 — RTS smoother (negative result)
 
