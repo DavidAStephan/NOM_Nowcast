@@ -82,9 +82,10 @@ jobs:
         shell: Rscript {0}
 
       - name: Run refresh_backtest.R
-        run: |
-          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
-          Rscript scripts/refresh_backtest.R
+        # Plain shell step: Rscript finds the cached library via the
+        # job-level R_LIBS_USER env. (A bare `.libPaths(...)` R line in a
+        # bash `run:` block was crashing this step — bash can't parse `c(`.)
+        run: Rscript scripts/refresh_backtest.R
 
       - name: Commit refreshed snapshot
         run: |
