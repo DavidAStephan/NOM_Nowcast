@@ -76,9 +76,10 @@ jobs:
         shell: Rscript {0}
 
       - name: Run capture_nom_vintage.R
-        run: |
-          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
-          Rscript scripts/capture_nom_vintage.R
+        # Plain shell step: Rscript finds the cached library via the
+        # job-level R_LIBS_USER env. (A bare `.libPaths(...)` R line in a
+        # bash `run:` block was crashing this step — bash can't parse `c(`.)
+        run: Rscript scripts/capture_nom_vintage.R
 
       - name: Commit appended vintage
         run: |
