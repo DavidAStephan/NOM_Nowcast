@@ -18,8 +18,16 @@ restrict_to_asof <- function(df, asof, lag_days) {
   if (is.null(df) || nrow(df) == 0L) return(df)
   if (!"period_unit" %in% names(df)) df$period_unit <- "month"
   asof <- as.Date(asof)
-  cutoff <- nn_first_observable(df$period, df$period_unit[1], lag_days)
-  df[cutoff <= asof, , drop = FALSE]
+  # Row-wise by period unit: a source can mix frequencies (e.g. NOM
+  # quarterly + annual-by-visa rows), and applying the first row's unit
+  # to every row mis-dates the others.
+  unit <- ifelse(is.na(df$period_unit), "month", as.character(df$period_unit))
+  cutoff <- as.Date(rep(NA_character_, nrow(df)))
+  for (u in unique(unit)) {
+    idx <- unit == u
+    cutoff[idx] <- nn_first_observable(as.Date(df$period[idx]), u, lag_days)
+  }
+  df[!is.na(cutoff) & cutoff <= asof, , drop = FALSE]
 }
 
 #' Build the list of backtest evaluation dates
@@ -70,6 +78,12 @@ run_backtest <- function(asof_date, db_path, cfg) {
   # publication lag. This loses true revision-vintage realism but is
   # the standard workaround for first-time backtesting before any
   # vintages have accumulated.
+  # A real vintage (captured at or before asof_date) already reflects
+  # exactly what was published then, so the publication-lag filter is
+  # only applied to pseudo-real-time (today's data) fallbacks. Applying
+  # the nominal 183-day NOM lag to a real vintage would hide quarters
+  # the ABS actually released a few days early.
+  is_real <- vapply(vintages, function(v) nrow(v) > 0L, logical(1))
   pseudo_rt <- cfg$backtest$pseudo_real_time
   if (is.null(pseudo_rt)) pseudo_rt <- TRUE
   if (isTRUE(pseudo_rt)) {
@@ -81,10 +95,13 @@ run_backtest <- function(asof_date, db_path, cfg) {
   oad_lag <- cfg$abs$publication_lag_days$oad %||% 35
   nom_lag <- cfg$abs$publication_lag_days$nom %||% 183
   vg_lag  <- cfg$homeaffairs$publication_lag_days %||% 45
+  restrict <- function(df, real, lag) {
+    if (isTRUE(real)) df else restrict_to_asof(df, asof_date, lag)
+  }
 
-  oad_clean    <- clean_oad(reenrich_oad(restrict_to_asof(vintages$oad, asof_date, oad_lag)), cfg)
-  nom_clean    <- clean_nom(reenrich_nom(restrict_to_asof(vintages$nom, asof_date, nom_lag)), cfg)
-  vg_clean     <- clean_visa_grants(reenrich_visa_grants(restrict_to_asof(vintages$visa_grants, asof_date, vg_lag)), cfg)
+  oad_clean    <- clean_oad(reenrich_oad(restrict(vintages$oad, is_real[["oad"]], oad_lag)), cfg)
+  nom_clean    <- clean_nom(reenrich_nom(restrict(vintages$nom, is_real[["nom"]], nom_lag)), cfg)
+  vg_clean     <- clean_visa_grants(reenrich_visa_grants(restrict(vintages$visa_grants, is_real[["visa_grants"]], vg_lag)), cfg)
 
   panel <- build_quarterly_panel(oad_clean, nom_clean, vg_clean, cfg)
   if (nrow(panel) < 8L) {
@@ -269,8 +286,9 @@ run_backtest <- function(asof_date, db_path, cfg) {
   }
 
   dplyr::bind_rows(rows) |>
-    dplyr::mutate(asof_date = asof_date,
-                  horizon   = quarters_between(.data$period, ref_q))
+    dplyr::mutate(asof_date   = asof_date,
+                  horizon     = quarters_between(.data$period, ref_q),
+                  nom_vintage = if (is_real[["nom"]]) "real" else "pseudo")
 }
 
 #' Fall back to current source data when the vintage store has none

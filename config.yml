@@ -14,7 +14,7 @@ default:
     parallel_workers: 4
     http_retries: 4
     http_backoff_seconds: [1, 4, 16, 64]
-    user_agent: "nomnowcast (+https://github.com/your-org/nom-nowcast)"
+    user_agent: "nomnowcast (+https://github.com/DavidAStephan/NOM_Nowcast)"
 
   # ----- Source endpoints -----
   # ABS time-series IDs change occasionally. The fetchers look these up by
@@ -39,6 +39,11 @@ default:
     # Annual NOM-by-visa-group (used by pi estimation):
     nom_slug_annual: "overseas-migration"
     nom_annual_visa_file: "34070DO004_202425.xlsx"
+    # The annual-by-visa cube is parsed but nothing downstream consumes
+    # it yet (clean_nom() keeps quarterly rows only). Off by default so
+    # every run doesn't download a file it never uses; flip on when the
+    # per-category pi estimator is wired to it.
+    fetch_annual_visa: false
     publication_lag_days:
       oad: 35      # OAD released ~5 weeks after reference month
       nom: 183     # NOM released ~6 months after reference quarter
@@ -68,10 +73,18 @@ default:
     wh_index:          "https://www.homeaffairs.gov.au/research-and-statistics/statistics/visa-statistics/work"
     sub_page_keywords: ["visit", "study", "live", "work", "migration-program"]
     publication_lag_days: 45
+    # The temporary-visa-holder scraper targets pages that moved to
+    # Power BI and returns nothing; no model consumes the output. Off
+    # by default (the fetcher short-circuits to an empty tibble). The
+    # BP0019 stock file on data.gov.au CKAN is the viable replacement.
+    twh_enabled: false
 
   bitre:
     airline_activity_index: "https://www.bitre.gov.au/statistics/aviation"
     publication_lag_days: 60
+    # Same story as twh: landing page no longer exposes the XLSX and
+    # nothing consumes the series. Off by default.
+    enabled: false
 
   # ----- Panel -----
   panel:
@@ -82,6 +95,21 @@ default:
     # year signal). "equal" gives 1/4 to each quarter. Defaults to
     # proportional.
     vg_disagg_strategy: "proportional"
+    # Visa-grant categories excluded from the modelling panel. Visitor
+    # grants (~5M/yr) are short-term tourism and would dominate the
+    # summed leading indicator while carrying almost no NOM signal.
+    visa_grant_exclude: ["visitor"]
+    # How to treat OAD quarters with fewer than 3 published months (the
+    # in-progress quarter live, and the h=0 quarter at every backtest
+    # origin). Before this knob existed the plain sum was used, which
+    # told the models arrivals had collapsed by 1/3-2/3 and produced
+    # the large one-signed h=0 under-bias in every model.
+    #   "scale" — gross up using each month's median historical share
+    #             of its quarter (per category / direction)
+    #   "drop"  — set the quarter to NA (pure forecast state)
+    #   "raw"   — legacy plain sum (for comparison only)
+    oad_partial_quarter: "scale"
+    oad_share_years: 5
 
   # ----- Categories -----
   categories:
@@ -316,6 +344,12 @@ default:
   backtest:
     start: "2010-01-01"
     end: ~                 # NULL => last completed quarter at asof_date
+    # When the vintage store has no NOM snapshot at an as-of date, fall
+    # back to today's data restricted by publication lag. Real vintages
+    # (captured weekly into data/vintages/nom_history.csv) are used
+    # wherever they exist, so the backtest is mixed-mode: pseudo-real-
+    # time before the first capture, genuinely vintage-aware after.
+    pseudo_real_time: true
     horizons:              # quarters relative to evaluation date
       - -2                 # backcast
       - -1

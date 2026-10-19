@@ -21,8 +21,10 @@ Pull requests welcome.
 |--------|------|----------------|-----------------|
 | ABS Overseas Arrivals and Departures (cat. 3401.0) | Long-term arrivals / departures by visa group | Monthly | ~5 weeks |
 | ABS Quarterly Population Estimates (cat. 3101.0) | Headline NOM total | Quarterly | ~6 months |
-| ABS Overseas Migration (cat. 3407.0) | Annual NOM by 4-category visa breakdown | Annual (FY) | ~9 months |
-| Department of Home Affairs (via data.gov.au CKAN) | Visa grants by program (Student, Visitor, Skilled, Working Holiday, Temporary Graduate) | Quarterly | ~45 days |
+| Department of Home Affairs (via data.gov.au CKAN) | Visa grants by program (Student, Skilled, Working Holiday, Temporary Graduate; Visitor is fetched but excluded from the model) | Financial-year pivots, re-issued quarterly | ~45 days |
+
+The ABS annual NOM-by-visa cube (cat. 3407.0) has a fetcher but is
+switched off until the per-category estimator consumes it.
 
 All sources are accessible via free public APIs / file downloads.
 Fetchers live in [`R/ingest/`](https://github.com/DavidAStephan/NOM_Nowcast/tree/main/R/ingest).
@@ -35,53 +37,53 @@ Fetchers live in [`R/ingest/`](https://github.com/DavidAStephan/NOM_Nowcast/tree
 - **No granular quarterly visa breakdown.** ABS retired quarterly
   NOM-by-visa publication. The model uses annual FY visa data
   broadcast across quarters via OAD-arrival proportions.
-- **Pseudo-real-time backtest only.** The site has no vintage
-  history yet — at each backtest as-of date the underlying data
-  values are today's values, restricted to what would have been
-  publicly observable then. A true vintage backtest will accumulate
-  as the pipeline runs weekly.
-- **Uncertainty intervals are not full Bayesian.** They come from the
-  Kalman filter's MLE point estimate, not from posterior sampling.
-  Phase 3 (Stan hierarchical model, [scaffold](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/stan/hierarchical_nom.stan)) targets proper posterior intervals.
+- **Mixed-mode backtest.** ABS NOM vintages have been captured weekly
+  since May 2026, so backtest origins from then on are genuinely
+  vintage-aware; earlier origins are pseudo-real-time (today's values,
+  restricted to what was publicly observable then). The vintage-aware
+  share grows one quarter per ABS release.
+- **Single-series headline.** The Bayesian headline models total NOM
+  only; the per-category decomposition still comes from the Phase 1
+  univariate Kalman filters and an empirical classification ratio.
 
 ## How the site is built
 
 ```
-Weekly cron (Mondays 06:00 UTC)
+Weekly (Mondays)
   │
-  ├── GitHub Actions: ubuntu-latest runner
-  │     │
-  │     ├── Install R 4.5.3 (RSPM binaries)
-  │     ├── Install Quarto CLI
-  │     ├── Restore renv-pinned packages
-  │     │
+  ├── 05:30 UTC  Refresh headline (Bayes)   → data/headline_bayes.rds
+  │                cmdstanr + bayes_kalman HMC fit, ~75 s, committed to main
+  ├── 06:00 UTC  Render and deploy          (also on every push to main)
+  │     ├── Install R 4.4 + Quarto (RSPM binaries, cached)
   │     ├── targets::tar_make()
   │     │     ├── Fetch ABS OAD via {readabs}
   │     │     ├── Fetch ABS NOM (cat. 3101.0)
   │     │     ├── Fetch DHA visa grants via data.gov.au CKAN
-  │     │     ├── Build quarterly panel
+  │     │     ├── Build quarterly panel (partial-quarter handling)
   │     │     ├── Estimate pi (empirical + smoothed)
   │     │     ├── Fit univariate Kalman per category (Phase 1)
   │     │     ├── Fit multivariate Kalman with Gamma lag (Phase 2 v4.0)
-  │     │     ├── Run benchmarks (bridge, RW, AR1)
-  │     │     └── Run pseudo-real-time backtest
-  │     │
+  │     │     └── Run benchmarks (bridge, RW, AR1)
+  │     ├── Verify core inputs arrived
   │     ├── quarto render  (this site)
-  │     └── peaceiris/actions-gh-pages → gh-pages branch
-  │
-  └── GitHub Pages serves _site/ from gh-pages branch
+  │     └── actions/deploy-pages → GitHub Pages
+  └── 22:00 UTC  Capture NOM vintage        → data/vintages/nom_history.csv
+
+Monthly (1st): Refresh backtest (all models incl. Bayes) → data/backtest_scored.rds
+On push / PR:  Tests (testthat)
 ```
 
-End-to-end build time: ~10-15 minutes.
+End-to-end render time: ~10 minutes with a warm package cache.
 
 ## Model architecture in one paragraph
 
-A bivariate state-space Kalman with three observation rows — OAD
-long-term arrivals, lagged visa grants, and quarterly NOM itself —
-all loading on a single latent log-arrivals state with a damped
-local-linear trend and quarterly seasonal. Visa grants are
-state-augmented with a discretised Gamma lag (mode at 1 quarter,
-4-quarter tail). The headline NOM forecast comes directly from the
+A Bayesian state-space model (`bayes_kalman`) with three observation
+rows — OAD long-term arrivals, visa grants with a discretised Gamma
+lag, and quarterly NOM itself — all loading on a single latent
+log-arrivals state with a damped local-linear trend. The latent state
+is integrated out by a Kalman filter inside Stan, so HMC samples only
+the ~10 static parameters and the credible intervals are proper
+posterior intervals. The headline NOM forecast comes directly from the
 latent state via a calibrated offset, bypassing the empirical-π
 extrapolation that earlier model versions relied on. Full equations
 on the [Methodology](methodology.qmd) page.
@@ -98,17 +100,17 @@ and PRs are welcome:
 
 Areas that could use help:
 
-- **Phase 3 Stan model** — the scaffold compiles but hasn't been
-  calibrated on the live panel.
-- **Per-category modelling.** Currently the multivariate fit is
-  aggregate only. Per-visa-category fits with cross-category
-  partial pooling would give a category decomposition of the
-  headline.
-- **Better leading indicators.** Department of Education student
-  enrolments and BITRE airline passenger data are obvious candidates;
-  both sources have moved to Power BI dashboards behind the public
-  download URLs and need re-wiring via data.gov.au or alternative
-  endpoints.
+- **Per-category modelling.** The Bayesian headline is aggregate only.
+  Per-visa-category fits with cross-category partial pooling would
+  give a category decomposition of the headline; the hierarchical Stan
+  scaffold exists but is uncalibrated.
+- **Better leading indicators.** The DHA temporary-visa-holder stock
+  (BP0019 on data.gov.au) and BITRE airline passenger data are obvious
+  candidates; the current fetchers target pages that moved to Power BI
+  and are switched off.
+- **Monthly visa grants.** The CKAN pivots are financial-year totals
+  spread across quarters by OAD shares; a monthly or quarterly grant
+  series would sharpen the leading signal considerably.
 
 ## Licence
 

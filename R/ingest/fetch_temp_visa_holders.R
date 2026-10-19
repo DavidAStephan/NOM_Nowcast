@@ -15,6 +15,10 @@
 #'   `category`, `unit`, `metadata`.
 #' @export
 fetch_temp_visa_holders <- function(cfg, asof) {
+  if (!isTRUE(cfg$homeaffairs$twh_enabled %||% FALSE)) {
+    nn_info("TWH fetch disabled (cfg$homeaffairs$twh_enabled); returning empty tibble")
+    return(empty_twh())
+  }
   out <- tryCatch(
     fetch_twh_scrape(cfg, asof),
     error = function(e) {

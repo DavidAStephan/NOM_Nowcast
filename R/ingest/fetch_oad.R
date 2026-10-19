@@ -205,7 +205,6 @@ parse_oad_cube <- function(path, sheet, direction) {
     ) |>
     dplyr::filter(!is.na(.data$value))
 
-  cfg <- config::get(file = "config.yml")
   long |>
     dplyr::mutate(
       period_unit = "month",

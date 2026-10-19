@@ -91,4 +91,5 @@ jobs:
           fi
           git add data/vintages/nom_history.csv
           git commit -m "Capture NOM vintage ($(date -u +%Y-%m-%d))"
+          git pull --rebase origin main
           git push

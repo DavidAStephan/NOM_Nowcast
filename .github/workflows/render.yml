@@ -158,6 +158,30 @@ jobs:
           targets::tar_make()
         shell: Rscript {0}
 
+      # _targets.R runs with error = "continue" so one flaky secondary
+      # source can't kill the build; this step makes sure the core
+      # inputs actually arrived before anything gets published.
+      - name: Verify pipeline outputs
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          errored <- targets::tar_meta(fields = "error")
+          errored <- errored[!is.na(errored$error), ]
+          if (nrow(errored)) {
+            cat("Targets with errors:\n"); print(errored)
+          }
+          panel <- targets::tar_read(panel_quarterly)
+          tot <- panel[panel$category == "total", ]
+          stopifnot(
+            "panel is empty" = nrow(panel) > 0,
+            "no OAD arrivals in panel" = any(!is.na(tot$oad_lt_arrivals)),
+            "no NOM in panel" = any(!is.na(tot$nom_final)),
+            "no visa grants in panel" = any(!is.na(panel$visa_grants))
+          )
+          cat(sprintf("panel OK: %d rows, OAD to %s, NOM to %s\n", nrow(panel),
+                      format(max(tot$period[!is.na(tot$oad_lt_arrivals)])),
+                      format(max(tot$period[!is.na(tot$nom_final)]))))
+        shell: Rscript {0}
+
       - name: Render Quarto site
         run: quarto render --to html
 

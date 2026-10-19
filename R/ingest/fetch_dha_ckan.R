@@ -69,6 +69,11 @@ fetch_dha_ckan_impl <- function(cfg, asof) {
     nn_warn("DHA CKAN: no 'granted' XLSX resources found.")
     return(empty_visa_grants())
   }
+  # One file per program: when a dataset carries several 'granted'
+  # workbooks (older lock dates, re-issues) keep only the most recent
+  # by the lock / as-at date embedded in the file name. Summing several
+  # vintages of the same program would double count.
+  granted <- select_latest_dha_resources(granted)
 
   purrr::map_dfr(granted, function(res) {
     path <- tryCatch(
@@ -76,8 +81,46 @@ fetch_dha_ckan_impl <- function(cfg, asof) {
       error = function(e) NULL
     )
     if (is.null(path)) return(empty_visa_grants())
-    parse_dha_ckan_xlsx(path, dataset_title = res$dataset_title %||% "")
+    lock <- dha_lock_date(res$url) %||% dha_lock_date(res$name %||% "")
+    if (is.null(lock)) lock <- as.Date(asof)
+    parse_dha_ckan_xlsx(path, dataset_title = res$dataset_title %||% "",
+                        lock_date = lock)
   })
+}
+
+#' Extract the "locked at" / "as at" date from a DHA resource name.
+#'
+#' DHA file names carry the data cut-off, e.g.
+#' `bp0015l-student-visas-granted-report-locked-at-2025-08-31-v100.xlsx`
+#' or `...-granted-at-2026-06-30-v100.xlsx`. Returns `NULL` when no
+#' ISO date is present.
+#' @keywords internal
+dha_lock_date <- function(x) {
+  m <- stringr::str_extract(basename(as.character(x)), "\\d{4}-\\d{2}-\\d{2}")
+  if (is.na(m)) return(NULL)
+  d <- suppressWarnings(as.Date(m))
+  if (is.na(d)) NULL else d
+}
+
+#' Keep the most recent 'granted' workbook per CKAN dataset.
+#' @keywords internal
+select_latest_dha_resources <- function(resources) {
+  if (!length(resources)) return(resources)
+  keys  <- vapply(resources, function(r) r$dataset_title %||% "", character(1))
+  dates <- vapply(resources, function(r) {
+    d <- dha_lock_date(r$url %||% "") %||% dha_lock_date(r$name %||% "")
+    if (is.null(d)) NA_real_ else as.numeric(d)
+  }, numeric(1))
+  keep <- logical(length(resources))
+  for (k in unique(keys)) {
+    idx <- which(keys == k)
+    if (length(idx) == 1L || all(is.na(dates[idx]))) {
+      keep[idx] <- TRUE
+    } else {
+      keep[idx[which.max(dates[idx])]] <- TRUE
+    }
+  }
+  resources[keep]
 }
 
 #' Query CKAN for datasets matching `query` and return a list of
@@ -113,8 +156,21 @@ ckan_dataset_resources <- function(query, endpoint, cfg) {
 #' We dynamically detect the header row by scanning for the row that
 #' contains "Applicant Type" (or "Visa Subclass") in column A.
 #'
+#' The outer dimension column is a merged cell in the pivot: only the
+#' first row of each group carries the label, the inner rows are blank.
+#' Fill-down therefore has to happen *before* any blank-row filtering —
+#' the original implementation filtered first and silently kept only
+#' the first sub-row of every group (~1% of Student / Skilled grants).
+#' Leaf rows are summed and checked against the pivot's own "Grand
+#' Total" row.
+#'
+#' @param path Path to the workbook.
+#' @param dataset_title CKAN dataset title (drives the category).
+#' @param lock_date Data cut-off date of the report. Financial-year
+#'   columns whose year ends after this date are year-to-date partials
+#'   and are dropped.
 #' @keywords internal
-parse_dha_ckan_xlsx <- function(path, dataset_title) {
+parse_dha_ckan_xlsx <- function(path, dataset_title, lock_date = NULL) {
   sheets <- readxl::excel_sheets(path)
   # Prefer a sheet whose name implies actual data, in order of
   # preference: "Granted" > "Lodged" > "Grants" > anything that isn't
@@ -134,7 +190,17 @@ parse_dha_ckan_xlsx <- function(path, dataset_title) {
                        .name_repair = "minimal"),
     error = function(e) NULL)
   if (is.null(raw) || nrow(raw) < 15L) return(empty_visa_grants())
+  parse_dha_pivot_raw(raw, dataset_title, lock_date = lock_date,
+                      source_name = basename(path))
+}
 
+#' Parse an already-read DHA pivot sheet (no file I/O; unit-testable).
+#' @inheritParams parse_dha_ckan_xlsx
+#' @param raw Tibble read with `col_names = FALSE`.
+#' @param source_name Label stored in `metadata`.
+#' @keywords internal
+parse_dha_pivot_raw <- function(raw, dataset_title, lock_date = NULL,
+                                source_name = "dha_pivot") {
   hdr_idx <- detect_dha_pivot_header(raw)
   if (is.na(hdr_idx)) return(empty_visa_grants())
 
@@ -149,10 +215,16 @@ parse_dha_ckan_xlsx <- function(path, dataset_title) {
   if (!length(val_cols)) return(empty_visa_grants())
 
   body <- raw[(hdr_idx + 1L):nrow(raw), , drop = FALSE]
-  # Drop the obvious total / blank rows
-  body <- body[!is.na(body[[dim_cols[1L]]]), , drop = FALSE]
+  if (!nrow(body)) return(empty_visa_grants())
 
-  # Fill-down on any dimension column with merged cells
+  # The pivot's own grand total, used as a reconciliation check below.
+  gt_idx <- which(grepl("(?i)^\\s*grand\\s*total", as.character(body[[dim_cols[1L]]])))[1L]
+  grand_total <- if (!is.na(gt_idx)) {
+    suppressWarnings(as.numeric(unlist(body[gt_idx, val_cols])))
+  } else NULL
+
+  # Fill-down FIRST (merged outer cells are blank on inner rows), then
+  # drop subtotal / grand-total rows on every dimension column.
   for (j in dim_cols) {
     v <- as.character(body[[j]])
     for (i in seq_along(v)) {
@@ -160,6 +232,12 @@ parse_dha_ckan_xlsx <- function(path, dataset_title) {
     }
     body[[j]] <- v
   }
+  is_total <- Reduce(`|`, lapply(dim_cols, function(j) {
+    v <- body[[j]]
+    !is.na(v) & grepl("(?i)total", v)
+  }))
+  body <- body[!is_total & !is.na(body[[dim_cols[1L]]]), , drop = FALSE]
+  if (!nrow(body)) return(empty_visa_grants())
 
   long <- purrr::map_dfr(val_cols, function(j) {
     tibble::tibble(
@@ -171,13 +249,34 @@ parse_dha_ckan_xlsx <- function(path, dataset_title) {
     )
   })
 
+  # Reconcile leaf-row sums against the pivot's grand total.
+  if (!is.null(grand_total)) {
+    leaf_sum <- vapply(val_cols, function(j) {
+      sum(suppressWarnings(as.numeric(body[[j]])), na.rm = TRUE)
+    }, numeric(1))
+    ok <- !is.na(grand_total) & grand_total > 0
+    rel <- abs(leaf_sum[ok] - grand_total[ok]) / grand_total[ok]
+    if (length(rel) && any(rel > 0.01)) {
+      nn_warn("DHA pivot {source_name}: leaf rows differ from Grand Total by up to {round(100 * max(rel), 1)}% ({sum(rel > 0.01)} column(s))")
+    }
+  }
+
+  # Drop year-to-date partial financial years (FY end after the report
+  # cut-off). Spreading a 2-month YTD total over four quarters would
+  # understate grants for the whole year.
+  periods <- parse_dha_period_label(long$period_label)
+  units   <- period_unit_from_label(long$period_label)
+  if (!is.null(lock_date)) {
+    fy_end <- periods + lubridate::years(1L) - lubridate::days(1L)
+    partial <- units == "year" & !is.na(periods) & fy_end > as.Date(lock_date)
+    if (any(partial)) {
+      nn_info("DHA pivot {source_name}: dropping partial year(s) {paste(unique(long$period_label[partial]), collapse = ', ')} (locked at {format(as.Date(lock_date))})")
+      long <- long[!partial, , drop = FALSE]
+    }
+  }
+  if (!nrow(long)) return(empty_visa_grants())
+
   long |>
-    # Drop subtotal / grand-total rows so caller-side summation by
-    # (period, category) doesn't double-count.
-    dplyr::filter(
-      !is.na(.data$applicant),
-      !grepl("(?i)total", .data$applicant)
-    ) |>
     dplyr::mutate(
       period      = parse_dha_period_label(.data$period_label),
       period_unit = period_unit_from_label(.data$period_label),
@@ -188,6 +287,7 @@ parse_dha_ckan_xlsx <- function(path, dataset_title) {
       metadata    = vapply(seq_len(dplyr::n()), function(i) {
         as.character(jsonlite::toJSON(
           list(dataset = dataset_title,
+               file      = source_name,
                applicant = .data$applicant[i],
                sector    = .data$sector[i],
                stream    = .data$stream[i]),
@@ -266,12 +366,18 @@ period_unit_from_label <- function(x) {
 }
 
 #' Map a CKAN dataset title to a canonical visa category.
+#'
+#' Visitor grants get their own `"visitor"` label rather than
+#' `other_temp`: at ~5 million a year they would swamp every other
+#' program in the summed visa signal, and visitors are overwhelmingly
+#' short-term movements that never count toward NOM. The panel builder
+#' drops `visitor` via `cfg$panel$visa_grant_exclude`.
 #' @keywords internal
 classify_dha_dataset <- function(title) {
   title <- as.character(title)
   out <- dplyr::case_when(
     grepl("(?i)^student",                 title) ~ "student",
-    grepl("(?i)^visitor",                 title) ~ "other_temp",
+    grepl("(?i)^visitor",                 title) ~ "visitor",
     grepl("(?i)working\\s*holiday",       title) ~ "working_holiday",
     grepl("(?i)temporary graduate",       title) ~ "other_temp",
     grepl("(?i)temporary work \\(skilled\\)", title) ~ "skilled",

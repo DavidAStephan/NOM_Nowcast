@@ -39,9 +39,9 @@ website:
       Updated automatically from ABS / DHA public data.
       Source code on [GitHub](https://github.com/DavidAStephan/NOM_Nowcast).
     right: |
-      Built with [{{< fa brands r-project >}}](https://www.r-project.org/),
-      [{{< fa scale-balanced >}} KFAS](https://cran.r-project.org/package=KFAS),
-      and [{{< fa book >}} Quarto](https://quarto.org/).
+      Built with [R](https://www.r-project.org/),
+      [Stan](https://mc-stan.org/), [KFAS](https://cran.r-project.org/package=KFAS)
+      and [Quarto](https://quarto.org/).
 
 format:
   html:

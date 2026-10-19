@@ -37,7 +37,6 @@ nn_quarter_start <- function(x) {
 #' @export
 nn_last_completed_quarter <- function(asof) {
   this_q <- nn_quarter_start(asof)
-  this_q - lubridate::days(1)  # somewhere in previous quarter
   nn_quarter_start(this_q - lubridate::days(1))
 }
 

@@ -138,7 +138,15 @@ fit_bayes_kalman <- function(panel, asof, cfg) {
   # posterior draw of (log_mean, log_sd) to get a draw of nom_hat,
   # then take quantiles across all sims.
   n_periods <- ncol(log_mean_draws)
-  set.seed(20260520)
+  # Local RNG: seed the interval simulation reproducibly without
+  # clobbering the caller's random state.
+  old_seed <- if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+    get(".Random.seed", envir = globalenv(), inherits = FALSE)
+  } else NULL
+  on.exit({
+    if (!is.null(old_seed)) assign(".Random.seed", old_seed, envir = globalenv())
+  }, add = TRUE)
+  set.seed(bcfg$seed %||% 20260520)
   nsims_per_draw <- 20L
   sim_draws <- matrix(NA_real_, nrow(log_mean_draws) * nsims_per_draw, n_periods)
   for (h in seq_len(n_periods)) {

@@ -12,6 +12,10 @@
 #'   `direction` ("inbound"/"outbound"), `unit`, `metadata`.
 #' @export
 fetch_bitre <- function(cfg, asof) {
+  if (!isTRUE(cfg$bitre$enabled %||% FALSE)) {
+    nn_info("BITRE fetch disabled (cfg$bitre$enabled); returning empty tibble")
+    return(empty_bitre())
+  }
   index_url <- cfg$bitre$airline_activity_index
   out <- tryCatch(
     fetch_bitre_scrape(index_url, cfg, asof),

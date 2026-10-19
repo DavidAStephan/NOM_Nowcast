@@ -50,47 +50,119 @@ cmdstanr-free.
 | Phase 3 v0.8 | Calibration check + log score on backtest page | Done |
 | Phase 3 v0.9 | Promote bayes_kalman to headline (calibration win) | Done |
 
+## October 2026 review — two upstream data bugs
+
+A full code review in October 2026 found that every backtest number
+published before then was shaped by two data-construction bugs, both
+now fixed. Everything in the "Backtest leaderboard" and the
+"Nowcast bias correction" sections below should be read in that
+light.
+
+1. **Partial OAD quarters summed as complete** (`build_quarterly_panel`).
+   With a 35-day OAD lag, the quarter just completed at every
+   quarter-start backtest origin has exactly 1 of 3 months published;
+   live, the in-progress quarter has 0-2. The panel summed whatever
+   existed and presented it as a full quarter, so every model was
+   told arrivals had collapsed by a third to two thirds. This is the
+   mechanism behind the "model-invariant" h=0 under-bias (−53k to
+   −98k across bridge, Kalman and all Bayes variants) and behind the
+   October 2026 headline collapsing to 47k for 2026-Q3. The panel now
+   grosses partial quarters up by historical month shares
+   (`panel.oad_partial_quarter: scale`), records `oad_months`, and the
+   refresh scripts write the live-edge state into their meta files.
+2. **DHA pivot parser kept ~1% of grants** (`parse_dha_ckan_xlsx`).
+   The pivots have merged outer-dimension cells; blank rows were
+   filtered *before* fill-down, so only the first sub-row of each
+   group survived: Student 1.3%, Skilled 1.3%, Visitor 8%, WHM 61%.
+   The "visa grants leading indicator" in every Phase 2/3 model was
+   therefore mostly WHM plus noise. Fixed (fill-down first, leaf rows
+   reconciled against the Grand Total row), plus: year-to-date partial
+   FYs dropped using the report lock date, one workbook per program
+   (latest lock date), Visitor grants excluded from the model
+   (`panel.visa_grant_exclude`), and a FY missing programs that the
+   prior FY had is dropped so the summed signal cannot collapse.
+
+Also fixed in the same pass: the monthly backtest workflow now runs
+the Bayesian models (it had been overwriting the snapshot without
+`bayes_kalman` since July 2026); the weekly NOM vintage history is
+loaded into the backtest store so origins from May 2026 on are
+genuinely vintage-aware and `abs_preliminary` is populated; the
+publication-lag filter is row-wise by period unit; NOM values are
+rounded; the annual NOM-by-visa cube, BITRE and TWH fetchers are
+gated off in config; a `Tests` workflow runs testthat on every push;
+commit-back workflows rebase before pushing; docs and page labels
+updated; `arrow` dropped and renv reported in sync.
+
+The June 2026 experiments (`bayes_kalman_fwd`, `bayes_kalman_twh`)
+described in earlier notes are **not in this repository** — no
+branch, stash or commit contains them.
+
 ## Backtest leaderboard (post-COVID)
 
-| Model | h=-1 RMSE | h=0 RMSE | h=0 log-score | h=0 cov80 |
-|-------|-----------|----------|---------------|-----------|
-| `kalman_multi_v2` (Phase 2 v4.0) | 36.7k | 77.9k | -26,839 | 0% |
-| `bayes_headline` (Phase 3 v0.1) | 47.3k | 67.0k | — | — |
-| `bayes_gamma` (Phase 3 v0.2) | 46.9k | 63.8k | -39 | 18% |
-| `bayes_gamma_learned` (Phase 3 v0.3) | 46.7k | 65.4k | — | — |
-| `bayes_kalman` (Phase 3 v0.6, current headline) | **34.0k** | 64.9k | **-14** | **45%** |
+Post-fix snapshot, 19 October 2026 (67 origins 2010-Q1 to 2026-Q3,
+12 Bayes origins, 1 origin with a real NOM vintage). Pre-fix values
+from the May 2026 snapshot in brackets.
 
-`bayes_kalman` was promoted to the headline (v0.9) after the
-calibration analysis showed it's the only model whose 80% / 95%
-credible intervals come close to nominal coverage. Point RMSE at
-$h = 0$ is essentially tied with `bayes_gamma` (1k difference); on
-the proper-scoring-rule log-score it dominates by a large margin.
+| Model | h=-1 RMSE | h=0 RMSE | h=0 bias | h=0 cov80 | h=+1 RMSE |
+|-------|-----------|----------|----------|-----------|-----------|
+| `bayes_gamma` (Phase 3 v0.2) | 28.3k (46.9k) | **28.0k** (63.8k) | +8.6k (−53k) | 45% (18%) | 24.4k (59.1k) |
+| `bayes_gamma_learned` (Phase 3 v0.3) | 27.9k (46.7k) | 29.1k (65.4k) | +9.3k (−55k) | 45% | **20.7k** (61.0k) |
+| `bayes_kalman` (Phase 3 v0.6, current headline) | **26.0k** (34.0k) | 29.1k (64.9k) | +13.0k (−55k) | **91%** (45%) | 31.0k (60.0k) |
+| `bayes_headline` (Phase 3 v0.1) | 29.5k (47.3k) | 31.0k (67.0k) | +7.8k (−57k) | 45% | 26.2k (61.2k) |
+| `kalman_multi_v2` (Phase 2 v4.0) | 34.4k (36.7k) | 40.6k (77.9k) | −8.8k (−71k) | 0% | 47.7k (78.9k) |
+| `bridge` | 27.3k | 37.7k (102k) | −7.7k (−98k) | — | — |
+
+Fixing the two data bugs cut every structural model's h=0 RMSE by
+more than half and removed the one-signed under-bias; the residual
+bias is now small and slightly *positive* for the Bayes models
+(+8k to +17k on 10-11 quarters, well inside the noise of that sample
+but worth watching: the month-share gross-up may run a touch hot).
+`bayes_kalman` remains the headline: best h=-1 RMSE, tied h=0 RMSE,
+and its 80% interval now covers 91% at h=0 and 90% at h=+1, i.e. it
+is now slightly conservative rather than over-confident. The
+log-scores of the four Bayes models are within 0.2 of each other at
+h=0. The RMSE-vs-preliminary column on the site is populated for one
+origin only and will fill in one quarter per ABS release.
 
 ## Open follow-ups
 
 In rough priority order:
 
-1. **Sync the `renv` lockfile.** Several Phase 3 deps (cmdstanr,
-   posterior, distributional, abind, matrixStats, tensorA,
-   checkmate) were added without an `renv::snapshot()`. The local
-   shells complain "project is out-of-sync".
-2. **Phase 3 v0.8 — forward-lag `bayes_kalman`.** The current
-   Kalman model processes visa with a backward lag because that's
-   what a causal forward filter natively supports. A trailing-block
-   pass over visa observations (after the main filter completes)
-   would let it adopt the forward-lag semantics of `bayes_gamma`
-   and might close the small $h = 0$ gap. Moderate Stan work.
-3. **Fix the students data pipeline.** Department of Education
-   moved most of the international-student data to a Power BI
-   dashboard; the existing scraper of `education.gov.au/...` hits
-   HTTP/2 framing errors and the panel currently ships with
-   `empty_students_clean()`. Restoring the third upstream signal
-   would help category-level disaggregation.
+1. **Retire or re-calibrate the nowcast adjustment.** With the panel
+   fix the h=0 bias is gone, so `R/backtest/nowcast_adjustment.R`
+   (committed, switched off, unit-tested) has no remaining purpose,
+   and its pre-fix calibration was deliberately not committed. Delete
+   the module, or keep it and re-fit it only if a residual bias
+   persists after a few more quarters. Watch whether the small positive bias is real;
+   if so, try `panel.oad_partial_quarter: drop` or a share window
+   that excludes 2020-21.
+2. **Student visa resource on CKAN is stale.** The latest "granted"
+   workbook the search returns is locked at 2025-08-31 while the other
+   programs are at June 2026; check whether DHA renamed the resource
+   or stopped publishing, and widen the search if so.
+3. **TWH stock via CKAN (BP0019).** The scraper is gated off; a CKAN
+   fetcher plus a shrunk covariate is the remaining untested leading
+   indicator direction.
 4. **Per-category hierarchical Bayes.** Earlier attempt found the
    per-category OAD series don't compose to the total (different
    visa-class definitions), so summed forecasts inflate by ~10×.
    Would need data-side restructuring to identify a clean partition
    before retrying.
+5. **Monthly / quarterly visa grants.** The FY pivots spread by OAD
+   shares are a blunt leading indicator; the CKAN "Granted (Month)"
+   sheets may expose finer granularity.
+
+## Nowcast bias correction (superseded)
+
+Before the October 2026 review, the h=0 under-prediction was treated
+as a property of the data and corrected post-hoc by a two-scalar,
+regime-aware calibration per horizon
+(`R/backtest/nowcast_adjustment.R`, factor ≈2.1 at h=0, LOO-validated
+RMSE 62k→38k on the pre-fix backtest). That calibration measured data
+bug 1 above, not a model property. The module is kept, switched off
+(`apply_adjustment: false`), with its horizon convention corrected to
+match the backtest (h=0 = last completed quarter). Decide its fate in
+follow-up 1.
 
 ## Refresh cadence
 
@@ -98,9 +170,14 @@ In rough priority order:
   locally, or the `Refresh headline (Bayes)` workflow (Mondays).
   Each fit is ~60-90s.
 - **Backtest snapshot:** `NN_REFRESH_BAYES=1 Rscript
-  scripts/refresh_backtest.R` locally. The full grid with 4 Bayes
-  variants × 12 quarters ≈ 35 minutes. There's also a `Refresh
-  backtest` workflow that runs the non-Bayes grid monthly.
+  scripts/refresh_backtest.R` locally (`NN_BAYES_MODELS=bayes_kalman`
+  for the production model only). The full grid with 4 Bayes
+  variants × 12 quarters ≈ 40 minutes. The `Refresh backtest`
+  workflow runs the same Bayes-enabled grid on the 1st of each month.
+- **NOM vintage capture:** `Capture NOM vintage` workflow, Mondays
+  22:00 UTC, appends to `data/vintages/nom_history.csv`.
+- **Tests:** `Rscript tests/testthat.R`; also the `Tests` workflow on
+  every push / PR.
 
 ## Surprising things to remember
 

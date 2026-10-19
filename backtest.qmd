@@ -22,19 +22,28 @@ has_backtest <- !is.null(scored) && nrow(scored) > 0L
 
 For each historical as-of date $T$ on a quarterly grid:
 
-1. Restrict every input series to observations whose publication date is
-   $\leq T$ (using documented publication lags — OAD ~35 days, NOM ~183
-   days, visa grants ~45 days).
-2. Refit every model from scratch on this restricted panel.
-3. Score predictions at horizons $h \in \{-2, -1, 0, +1\}$ quarters
-   relative to $T$, where $h = 0$ is the "current" quarter (NOM not yet
-   published) and $h = -2, -1$ are recent backcasts.
-4. Use the latest available ABS NOM as the evaluation "truth".
+1. Read ABS NOM as it stood at $T$ from the captured vintage history
+   when one exists (weekly snapshots since May 2026); otherwise fall
+   back to today's values restricted by the documented publication lag
+   (~183 days). OAD (~35 days) and visa grants (~45 days) are always
+   today's values restricted by lag.
+2. Aggregate monthly OAD to quarters. The quarter just completed at $T$
+   has only one of its three months published, so it is grossed up
+   using each month's historical share of its quarter rather than
+   summed as if complete (see *Data completeness at the live edge* on
+   the Methodology page).
+3. Refit every model from scratch on this restricted panel.
+4. Score predictions at horizons $h \in \{-2, -1, 0, +1\}$ quarters
+   relative to $T$, where $h = 0$ is the quarter just completed at $T$
+   (NOM not yet published) and $h = -2, -1$ are recent backcasts.
+5. Use the latest available ABS NOM as the evaluation "truth", and —
+   for origins with a real vintage — the ABS value first published for
+   that quarter as the preliminary benchmark.
 
-This is **pseudo-real-time** — we don't have a true vintage history,
-so the underlying data values themselves don't reflect their
-contemporaneous releases. A real vintage-aware backtest is a logged
-follow-up; see [STATUS.md](https://github.com/DavidAStephan/NOM_Nowcast/blob/main/STATUS.md).
+Origins before the first captured vintage are therefore
+**pseudo-real-time** (today's values, lag-restricted); later origins
+are genuinely vintage-aware. The run details below say how many
+origins used a real vintage.
 
 Models compared:
 
@@ -50,7 +59,7 @@ Models compared:
 | `bridge` | OLS bridge regression: NOM ~ lagged OAD + lagged visa grants. |
 | `random_walk` | Headline NOM at $T-1$ rolled forward. |
 | `ar1` | AR(1) on quarter-on-quarter NOM growth. |
-| `abs_preliminary` | The ABS NOM value at vintage $T$ (informational — we don't have true vintage history). |
+| `abs_preliminary` | The ABS NOM value as first published, scored against the latest vintage. Only populated for origins that have a captured vintage; empty (shown as —) for pseudo-real-time origins. |
 
 The backtest is computed offline (via `scripts/refresh_backtest.R`)
 and the scored tibble is committed to the repo. The site renders cheaply
@@ -69,6 +78,7 @@ agg <- scored |>
     RMSE   = mean(rmse, na.rm = TRUE),
     MAE    = mean(mae,  na.rm = TRUE),
     Bias   = mean(bias, na.rm = TRUE),
+    RMSEp  = mean(rmse_vs_prelim, na.rm = TRUE),
     LogS   = mean(log_score, na.rm = TRUE),
     Cov80  = if (has_calib) mean(cov80, na.rm = TRUE) else NA_real_,
     Cov95  = if (has_calib) mean(cov95, na.rm = TRUE) else NA_real_,
@@ -76,17 +86,19 @@ agg <- scored |>
   ) |>
   dplyr::filter(is.finite(RMSE)) |>
   dplyr::arrange(horizon, RMSE) |>
-  dplyr::mutate(Horizon = paste0("h = ", horizon)) |>
-  dplyr::select(Horizon, Model = model, n, RMSE, MAE, Bias, LogS, Cov80, Cov95)
+  dplyr::mutate(Horizon = paste0("h = ", horizon),
+                RMSEp = ifelse(is.finite(RMSEp), RMSEp, NA_real_)) |>
+  dplyr::select(Horizon, Model = model, n, RMSE, MAE, Bias, RMSEp, LogS, Cov80, Cov95)
 
 agg |>
   gt::gt(groupname_col = "Horizon") |>
-  gt::fmt_number(columns = c("RMSE", "MAE", "Bias"),
+  gt::fmt_number(columns = c("RMSE", "MAE", "Bias", "RMSEp"),
                  decimals = 0, use_seps = TRUE) |>
   gt::fmt_number(columns = "LogS", decimals = 2) |>
   gt::fmt_percent(columns = c("Cov80", "Cov95"), decimals = 0) |>
   gt::sub_missing(missing_text = "—") |>
-  gt::cols_label(LogS = "Log score", Cov80 = "80% cov", Cov95 = "95% cov") |>
+  gt::cols_label(RMSEp = "RMSE vs ABS prelim", LogS = "Log score",
+                 Cov80 = "80% cov", Cov95 = "95% cov") |>
   gt::tab_options(table.font.size = "small") |>
   gt::tab_source_note(gt::md(
     paste0(
@@ -101,7 +113,8 @@ agg |>
       else "",
       ". Refreshed ",
       if (!is.null(meta)) format(meta$refreshed_at, "%d %B %Y") else "—",
-      ". RMSE / MAE / Bias in persons. ",
+      ". RMSE / MAE / Bias in persons, against the latest ABS vintage. ",
+      "**RMSE vs ABS prelim** scores against the value ABS first published for the quarter; only origins with a captured vintage contribute, so it is blank for most models and horizons until the vintage history is longer. ",
       "**Log score** is the average per-observation log-likelihood of the truth under the model's predictive distribution (higher is better — proper scoring rule). ",
       "**Cov80 / Cov95** are the empirical coverage of the model's 80% / 95% credible intervals; well-calibrated models should sit at 80% / 95%. ",
       "Models are sorted within each horizon by RMSE."
@@ -186,14 +199,22 @@ plot_backtest_rmse(scored)
 - **No model has direct NOM signal at h = 0 / h = +1** (NOM isn't
   published yet at those horizons), so all Kalman variants converge
   to similar performance. This is the structural limit of point
-  estimation from public data; bigger gains require either richer
-  leading indicators or a Bayesian model with explicit posterior
-  uncertainty (Phase 3 punch-list item).
-- **The ABS preliminary "model"** is informational only — without a
-  captured vintage history the framework falls back to using the
-  latest available NOM as the preliminary value, which is circular.
-  A real vintage-aware backtest would require running the pipeline
-  weekly for ~6 months to accumulate ABS revisions.
+  estimation from public data.
+- **Before October 2026 every model showed a large one-signed h = 0
+  under-prediction** (−53k to −98k post-COVID). That was a data
+  construction artefact, not a modelling result: the quarter just
+  completed at each origin had only one of its three OAD months
+  published and was summed as if complete, so every model was told
+  arrivals had collapsed by two thirds. The panel now grosses partial
+  quarters up by historical month shares; snapshots refreshed after
+  that fix are not comparable with earlier published numbers.
+- **The ABS preliminary "model"** is only populated for origins that
+  have a captured vintage (weekly since May 2026), so it is sparse for
+  now and grows one quarter per ABS release. For earlier origins there
+  is no preliminary value and the column is blank.
+- **The random walk has no h = 0 / h = +1 entry** by construction: with
+  a ~6-month NOM lag the previous quarter's NOM is not yet published
+  at the origin either.
 
 ## Run details
 
@@ -203,6 +224,15 @@ if (!is.null(meta)) {
               meta$n_asof_dates,
               as.character(meta$grid_from),
               as.character(meta$grid_to)))
+  if (!is.null(meta$n_real_vintage_origins)) {
+    cat(sprintf("- Origins with a real NOM vintage: %d\n", meta$n_real_vintage_origins))
+  }
+  if (!is.null(meta$models)) {
+    cat(sprintf("- Models in snapshot:   %s\n", paste(meta$models, collapse = ", ")))
+  }
+  if (!is.null(meta$oad_partial_quarter)) {
+    cat(sprintf("- Partial OAD quarters: %s\n", meta$oad_partial_quarter))
+  }
   cat(sprintf("- Last refreshed:       %s\n",
               format(meta$refreshed_at, "%d %B %Y %H:%M %Z")))
 } else {

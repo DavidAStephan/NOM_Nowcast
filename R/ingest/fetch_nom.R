@@ -31,13 +31,18 @@ fetch_nom <- function(cfg, asof) {
       tibble::tibble()
     }
   )
-  ann <- tryCatch(
-    fetch_nom_annual_visa(cfg, asof),
-    error = function(e) {
-      nn_warn("NOM annual-visa fetch failed: {conditionMessage(e)}")
-      tibble::tibble()
-    }
-  )
+  # The annual-by-visa cube is only fetched on request: clean_nom()
+  # keeps quarterly rows, so until the per-category pi estimator is
+  # wired to it the download is dead weight on every run.
+  ann <- if (isTRUE(cfg$abs$fetch_annual_visa %||% FALSE)) {
+    tryCatch(
+      fetch_nom_annual_visa(cfg, asof),
+      error = function(e) {
+        nn_warn("NOM annual-visa fetch failed: {conditionMessage(e)}")
+        tibble::tibble()
+      }
+    )
+  } else tibble::tibble()
   out <- dplyr::bind_rows(out, ann)
   if (is.null(out) || nrow(out) == 0L) {
     return(fetch_nom_fallback(cfg, asof))
@@ -114,7 +119,9 @@ parse_nom_quarterly_cube <- function(path, asof) {
       series_id      = series_ids[col_idx] %||% paste0("nom_col", col_idx),
       period         = lubridate::floor_date(period, "quarter"),
       period_unit    = "quarter",
-      value          = vals * scale,
+      # Published in thousands with one decimal; round so 128.7 * 1000
+      # is stored as 128700, not 128699.99999999999.
+      value          = round(vals * scale),
       category       = "total",
       vintage_status = nom_classify_status(series_labels[col_idx], period, asof),
       unit           = "persons",
@@ -241,8 +248,10 @@ parse_nom_annual_visa_cube <- function(path, asof) {
                   "category", "vintage_status", "unit", "metadata")
 }
 
-#' Parse an ABS financial-year label (`"2023-24"`) into the FY-end date
-#' (`2024-06-30`, normalised to `2024-07-01` as the period start).
+#' Parse an ABS financial-year label (`"2023-24"`) into the FY *start*
+#' date (`2023-07-01`), matching the convention used for DHA financial-
+#' year labels in [parse_dha_period_label()] so annual rows from both
+#' sources line up on the same `period`.
 #' @keywords internal
 parse_fy_label <- function(x) {
   x_chr <- as.character(x)
@@ -250,7 +259,7 @@ parse_fy_label <- function(x) {
   yr <- suppressWarnings(as.integer(m[, 2]))
   ok <- !is.na(yr)
   out <- rep(as.Date(NA_character_), length(x_chr))
-  out[ok] <- as.Date(sprintf("%d-07-01", yr[ok] + 1L))
+  out[ok] <- as.Date(sprintf("%d-07-01", yr[ok]))
   out
 }
 

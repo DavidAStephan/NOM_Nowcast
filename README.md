@@ -3,8 +3,10 @@
 A reproducible R pipeline for nowcasting quarterly Australian Net Overseas
 Migration (NOM) using only publicly available data. Built around three
 modelling generations (univariate Kalman → multi-source state-space →
-Bayesian hierarchical) and a vintage-aware backtest framework that compares
-the model against the ABS preliminary estimate.
+Bayesian state-space in Stan) and a vintage-aware backtest framework that
+compares the model against the ABS preliminary estimate. The production
+headline is `bayes_kalman` (Phase 3 v0.6); see [STATUS.md](STATUS.md) for
+the current state and open work.
 
 **Live site:** <https://DavidAStephan.github.io/NOM_Nowcast/>
 
@@ -27,8 +29,10 @@ Quarto site, and deploys to GitHub Pages.
 
 R dependencies install via the Posit Public Package Manager (RSPM)
 binaries — no compilation, no apt deps beyond what's on the standard
-`ubuntu-latest` image. cmdstanr / Stan are intentionally *not* installed
-in CI (Phase 3 is scaffolded only).
+`ubuntu-22.04` image. The render workflow is Stan-free; the two
+workflows that fit Bayesian models (`Refresh headline (Bayes)` weekly,
+`Refresh backtest` monthly) install cmdstanr and cache the cmdstan
+toolchain.
 
 ## Quick start
 
@@ -37,68 +41,85 @@ in CI (Phase 3 is scaffolded only).
 install.packages("renv")
 renv::restore()
 
-# 2. Fetch raw data, build vintage store, run Phase 1 model, build reports
+# 2. Fetch raw data, build the panel, fit the Kalman models and benchmarks
 targets::tar_make()
 
-# 3. Inspect the headline nowcast
+# 3. Inspect the Kalman headline (the Bayesian headline is a committed
+#    snapshot, data/headline_bayes.rds, refreshed by
+#    scripts/refresh_headline_bayes.R)
 targets::tar_read(nowcast_headline)
 
-# 4. Open the reports
-browseURL("reports/nowcast_report.html")
-browseURL("reports/methodology.html")
-browseURL("reports/backtest_report.html")
+# 4. Build and preview the site
+quarto::quarto_preview()
 ```
 
-A full run from a cold cache takes roughly 30–60 minutes on a modern laptop
-for Phase 1; Phase 3 (Stan) is the bottleneck and budgets up to 4 hours.
+```sh
+# Unit tests (synthetic data only, no network)
+Rscript tests/testthat.R
+
+# Bayesian headline snapshot (needs cmdstanr; ~2 min incl. data fetch)
+Rscript scripts/refresh_headline_bayes.R
+
+# Backtest snapshot; add NN_REFRESH_BAYES=1 for the four Bayes models
+# (~40 min) or NN_BAYES_MODELS=bayes_kalman for the production model only
+NN_REFRESH_BAYES=1 Rscript scripts/refresh_backtest.R
+```
 
 ## What the pipeline does
 
 1. **Ingest** publicly available migration indicators
-   - ABS Overseas Arrivals and Departures (cat. 3401.0) via `{readabs}`
-   - ABS NOM estimates (cat. 3101.0)
-   - Department of Home Affairs visa grants
-   - Department of Education international student commencements/enrolments
-   - BITRE international airline activity
-   - DHA temporary visa holder stocks and Working Holiday Maker statistics
-2. **Vintage-track** every fetched value in a DuckDB store so future runs can
-   reconstruct exactly what was knowable at any historical date.
-3. **Estimate empirical classification probabilities** π<sub>c</sub> by
-   comparing completed-cohort OAD long-term arrivals against the
-   eventually-revised ABS NOM by visa category.
-4. **Model latent arrivals** with a per-category univariate Kalman filter
-   (Phase 1), extended in later phases to a multi-source state-space model
-   and a full Bayesian hierarchical specification in Stan.
-5. **Backtest** every model variant against the ABS preliminary estimate over
-   pre-COVID, COVID and post-COVID regimes, by category and aggregate.
-6. **Report** the current nowcast, methodology and backtest results in three
-   self-contained Quarto documents.
+   - ABS Overseas Arrivals and Departures (cat. 3401.0) data cubes via `{readabs}`
+   - ABS quarterly NOM (cat. 3101.0), captured weekly into a vintage history
+   - Department of Home Affairs visa grants via the data.gov.au CKAN API
+   - (scaffolded, switched off in `config.yml`) BITRE airline activity and
+     DHA temporary visa holder stocks
+2. **Vintage-track** every fetched value in a DuckDB store, and append the
+   weekly ABS NOM snapshot to `data/vintages/nom_history.csv` so the
+   backtest can reconstruct what was knowable at each date.
+3. **Build a quarterly panel**, grossing up the partial quarter at the live
+   edge of OAD by historical month shares instead of summing it as if
+   complete (see *Data completeness at the live edge* in the methodology).
+4. **Estimate empirical classification probabilities** π<sub>c</sub> by
+   comparing completed-cohort OAD long-term flows against the
+   eventually-revised ABS NOM.
+5. **Model latent arrivals** with a per-category univariate Kalman filter
+   (Phase 1), a multi-source state-space model with a Gamma visa lag
+   (Phase 2), and Bayesian state-space models in Stan (Phase 3), of which
+   `bayes_kalman` is the production headline.
+6. **Backtest** every model variant at quarterly origins (pseudo-real-time
+   before May 2026, genuinely vintage-aware after) over pre-COVID, COVID
+   and post-COVID regimes, with RMSE, bias, log score and interval coverage.
+7. **Report** the current nowcast, methodology and backtest results on a
+   Quarto website rebuilt weekly.
 
-See [reports/methodology.qmd](reports/methodology.qmd) for the full write-up
-including all model equations.
+See [methodology.qmd](methodology.qmd) for the full write-up including all
+model equations.
 
 ## Project layout
 
 ```
-nom_nowcast/
-├── _targets.R                Pipeline DAG
-├── config.yml                Paths, hyperparameters, eval windows
+NOM_Nowcast/
+├── _targets.R                Pipeline DAG (render-time fits; no backtest)
+├── _quarto.yml, *.qmd        The website (index, methodology, backtest, about)
+├── config.yml                Paths, hyperparameters, eval windows, feature gates
 ├── R/
 │   ├── ingest/               One fetcher per source
-│   ├── clean/                Harmonisation, category mapping
+│   ├── clean/                Harmonisation, panel build, category mapping
 │   ├── vintages/             DuckDB vintage store interface
 │   ├── pi/                   Classification-probability estimation
-│   ├── models/               Kalman, Stan, bridge regression
-│   ├── backtest/             Vintage simulation, scoring, benchmarks
+│   ├── models/               Kalman, Bayesian SSMs, bridge regression
+│   ├── backtest/             Vintage simulation, scoring, benchmarks, adjustment
 │   ├── viz/                  Plotting
 │   └── utils/                Cross-cutting helpers
-├── stan/                     Stan source for Phase 3
+├── stan/                     Stan sources (compiled binaries gitignored)
+├── scripts/                  refresh_headline_bayes, refresh_backtest, capture_nom_vintage
 ├── data/
 │   ├── raw/                  Immutable downloads (gitignored)
-│   ├── vintages/             DuckDB vintage store (gitignored)
-│   └── processed/            Analysis-ready data (gitignored)
-├── reports/                  Quarto reports
-└── tests/testthat/           Unit tests
+│   ├── vintages/             DuckDB store (gitignored) + nom_history.csv (tracked)
+│   ├── headline_bayes*.rds   Committed Bayesian headline snapshot
+│   └── backtest_*.rds        Committed backtest snapshot
+├── .github/workflows/        render, headline, backtest, capture_nom, tests
+└── tests/testthat/           Unit tests (run with Rscript tests/testthat.R)
 ```
 
 ## Configuration
@@ -119,15 +140,33 @@ The framework recursively re-runs every model at each evaluation date
 `T ∈ [backtest.start, backtest.end]`. For each `T` we:
 
 1. Restrict each input series to observations whose publication date is
-   `≤ T`. Publication lags are series-specific (see `config.yml`).
-2. Restrict the ABS NOM target to the vintage available at `T`.
+   `≤ T`. Publication lags are series-specific (see `config.yml`), and the
+   partial OAD quarter at the edge is grossed up rather than summed.
+2. Use the captured ABS NOM vintage at `T` where one exists (weekly since
+   May 2026); otherwise today's values restricted by lag.
 3. Re-estimate the model from scratch.
-4. Produce nowcast (h=0), backcast (h=-2, -1) and forecast (h=+1).
+4. Produce nowcast (h=0, the quarter just completed at `T`), backcast
+   (h=-2, -1) and forecast (h=+1).
 
-Performance is reported as RMSE / MAE / bias / log score / hit rate, broken
-down by regime (pre-COVID / COVID / post-COVID) and by category, against
-both the eventually-revised final NOM and — most importantly — the ABS
-preliminary estimate available at `T`.
+Performance is reported as RMSE / MAE / bias / log score / interval
+coverage / hit rate, broken down by regime (pre-COVID / COVID /
+post-COVID) and by category, against the eventually-revised NOM and, for
+origins with a real vintage, against the ABS preliminary estimate.
+
+## Known data pitfalls (fixed October 2026)
+
+Two upstream artefacts shaped every backtest number published before
+October 2026; the phase-by-phase tables below were produced with them
+and are kept as a historical record, not as current performance.
+
+- **Partial OAD quarters** were summed as if complete, so the h=0 quarter
+  at every origin carried one of three months and every model showed a
+  −53k to −98k h=0 bias. The panel now grosses partial quarters up
+  (`panel.oad_partial_quarter`).
+- **The DHA pivot parser** kept only the first sub-row of each merged
+  group, i.e. about 1% of Student and Skilled grants. Fixed; Visitor
+  grants are now excluded from the model (`panel.visa_grant_exclude`) and
+  year-to-date partial financial years are dropped.
 
 ## Reproducibility
 
@@ -361,16 +400,18 @@ indicator.
 ## Adding a new data source
 
 1. Write a fetcher under `R/ingest/`. It must return a tibble keyed by
-   `series_id`, `period`, with one column per observation.
-2. Register it in `_targets.R` as a target. Use `tar_target(..., format =
-   "qs")`.
+   `series_id`, `period`, with one column per observation, and honour an
+   `enabled` gate in `config.yml` so it can be switched off without
+   touching the DAG.
+2. Register it in `_targets.R` as a target (the project-wide format is
+   `rds`).
 3. Add the publication-lag entry to `config.yml`.
 4. Wire it into the vintage store via `vintages_write()`.
 5. Optionally surface it as an observation block in the state-space model.
 
 ## Contributing
 
-Code style: tidyverse style guide, run `styler::style_pkg()` and
-`lintr::lint_package()` before committing. Roxygen on every exported
+Code style: tidyverse style guide, run `styler::style_dir("R")` and
+`lintr::lint_dir("R")` before committing. Roxygen on every exported
 function. Tests in `tests/testthat/` for any function with non-trivial
-logic.
+logic; they run in CI on every push and pull request.

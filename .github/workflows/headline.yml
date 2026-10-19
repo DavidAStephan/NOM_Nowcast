@@ -1,6 +1,6 @@
 name: Refresh headline (Bayes)
 
-# Fits the production headline using bayes_gamma and commits the
+# Fits the production headline using bayes_kalman and commits the
 # snapshot back to main. Triggered manually or on a weekly cadence.
 # The main render workflow reads `data/headline_bayes.rds`; it
 # does NOT install cmdstanr or run HMC itself.
@@ -120,4 +120,5 @@ jobs:
           fi
           git add data/headline_bayes.rds data/headline_bayes_meta.rds
           git commit -m "Refresh Bayesian headline snapshot ($(date -u +%Y-%m-%d))"
+          git pull --rebase origin main
           git push

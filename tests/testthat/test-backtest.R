@@ -11,6 +11,18 @@ test_that("restrict_to_asof filters out unpublished observations", {
   expect_true(all(out$value <= 4))
 })
 
+test_that("restrict_to_asof applies the lag per row when units are mixed", {
+  df <- tibble::tibble(
+    period      = as.Date(c("2024-01-01", "2024-01-01")),
+    period_unit = c("quarter", "year"),
+    value       = c(1, 2)
+  )
+  # Quarter ending 2024-03-31 + 183 days -> observable from 2024-10-01;
+  # the year ending 2024-12-31 is not observable until mid-2025.
+  out <- restrict_to_asof(df, asof = "2024-11-01", lag_days = 183)
+  expect_equal(out$value, 1)
+})
+
 test_that("build_backtest_grid returns quarter starts", {
   cfg <- list(backtest = list(start = "2020-01-01",
                               end   = "2021-04-01"))

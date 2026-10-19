@@ -68,7 +68,8 @@ nn_y_thousands <- function() {
 #' @return A `ggplot`.
 #' @export
 plot_nowcast_headline <- function(headline, panel, asof = Sys.Date(),
-                                  min_period = NULL) {
+                                  min_period = NULL,
+                                  model_label = "headline model") {
   if (!nrow(headline)) {
     return(ggplot2::ggplot() + nn_theme() +
            ggplot2::labs(title = "Nowcast not available"))
@@ -110,7 +111,8 @@ plot_nowcast_headline <- function(headline, panel, asof = Sys.Date(),
     nn_y_thousands() +
     ggplot2::labs(
       title    = "Headline NOM: model vs ABS",
-      subtitle = "Blue line = multivariate Kalman nowcast (with 80% / 95% intervals); red line = ABS published final NOM",
+      subtitle = paste0("Blue line = ", model_label,
+                        " (with 80% / 95% intervals); red line = ABS published NOM, latest vintage"),
       y        = "NOM per quarter (persons)",
       caption  = paste0("Source: ABS catalogues 3401.0, 3101.0, 3407.0; DHA visa-grant data via data.gov.au CKAN. Updated ",
                         format(asof, "%d %B %Y"), ".")
@@ -142,7 +144,7 @@ plot_nowcast_categories <- function(categories, period = NULL) {
     ) +
     ggplot2::labs(
       title    = sprintf("Category contributions to NOM, %s",
-                         format(period, "%Y · Q%q")),
+                         nn_quarter_label(period, sep = " · ")),
       subtitle = "Per-visa-category contribution from the univariate Kalman",
       y        = NULL
     ) +

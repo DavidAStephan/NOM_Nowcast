@@ -1,9 +1,15 @@
 name: Refresh backtest
 
-# Runs the pseudo-real-time backtest grid and commits the scored
-# snapshot back to main. Triggered manually or on a slower cadence
-# (the first of each month). The headline render workflow reads
-# `data/backtest_scored.rds`; it does NOT recompute the backtest.
+# Runs the backtest grid (pseudo-real-time before the first captured
+# NOM vintage, genuinely vintage-aware after) INCLUDING the four
+# Bayesian models, and commits the scored snapshot back to main.
+# Triggered manually or on the first of each month. The render
+# workflow reads `data/backtest_scored.rds`; it does NOT recompute.
+#
+# cmdstanr / cmdstan are installed here because the production headline
+# is `bayes_kalman`: a refresh without it silently drops the production
+# model from the public backtest page (which is what happened between
+# July and October 2026).
 
 on:
   schedule:
@@ -20,7 +26,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_LIBS_USER: ${{ github.workspace }}/R-lib
@@ -38,7 +44,8 @@ jobs:
             libssl-dev \
             libcurl4-openssl-dev \
             libsodium-dev \
-            libicu-dev
+            libicu-dev \
+            g++ make
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
@@ -50,11 +57,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.R_LIBS_USER }}
-          key: r-jammy-${{ runner.os }}-v3-${{ hashFiles('.github/workflows/render.yml') }}
+          key: r-jammy-${{ runner.os }}-bayes-v1-${{ hashFiles('.github/workflows/headline.yml') }}
           restore-keys: |
-            r-jammy-${{ runner.os }}-v3-
+            r-jammy-${{ runner.os }}-bayes-v1-
 
-      - name: Install R packages (RSPM Linux binaries)
+      - name: Cache cmdstan toolchain
+        id: cmdstan-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cmdstan
+          key: cmdstan-2.39.0-${{ runner.os }}-jammy
+
+      - name: Install R packages (RSPM Linux binaries + cmdstanr)
         run: |
           dir.create(Sys.getenv("R_LIBS_USER"), showWarnings = FALSE, recursive = TRUE)
           .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
@@ -74,17 +88,38 @@ jobs:
             "ggplot2", "glue", "gt", "httr2", "jsonlite", "KFAS",
             "lubridate", "purrr", "readabs", "readr", "readxl",
             "rvest", "scales", "stringr", "tarchetypes", "targets",
-            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass"
+            "tibble", "tidyr", "tsibble", "yaml", "cli", "digest", "sass",
+            "posterior", "distributional"
           )
           missing <- pkgs[!vapply(pkgs, requireNamespace,
                                   logical(1), quietly = TRUE)]
           if (length(missing)) install.packages(missing)
+          if (!requireNamespace("cmdstanr", quietly = TRUE)) {
+            install.packages("cmdstanr",
+              repos = c("https://stan-dev.r-universe.dev", getOption("repos")))
+          }
         shell: Rscript {0}
 
-      - name: Run refresh_backtest.R
+      - name: Install cmdstan toolchain (if not cached)
+        if: steps.cmdstan-cache.outputs.cache-hit != 'true'
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          cmdstanr::check_cmdstan_toolchain(fix = TRUE)
+          cmdstanr::install_cmdstan(cores = 4)
+        shell: Rscript {0}
+
+      - name: Set cmdstan path
+        run: |
+          .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+          cmdstanr::set_cmdstan_path("~/.cmdstan/cmdstan-2.39.0")
+        shell: Rscript {0}
+
+      - name: Run refresh_backtest.R (with Bayesian models)
         # Plain shell step: Rscript finds the cached library via the
         # job-level R_LIBS_USER env. (A bare `.libPaths(...)` R line in a
         # bash `run:` block was crashing this step — bash can't parse `c(`.)
+        env:
+          NN_REFRESH_BAYES: "1"
         run: Rscript scripts/refresh_backtest.R
 
       - name: Commit refreshed snapshot
@@ -97,4 +132,7 @@ jobs:
           fi
           git add data/backtest_scored.rds data/backtest_meta.rds
           git commit -m "Refresh backtest snapshot ($(date -u +%Y-%m-%d))"
+          # Other scheduled workflows commit to main too; rebase so a
+          # concurrent capture/headline commit doesn't make the push fail.
+          git pull --rebase origin main
           git push

@@ -29,9 +29,7 @@ tar_option_set(
 )
 
 # Per-project config snapshot. Anything that depends on it will rebuild
-# when config.yml changes.
-cfg <- config::get(file = "config.yml")
-asof <- nn_asof(cfg)
+# when config.yml changes (see the config_file / cfg_target nodes).
 
 list(
   # ----------------------------------------------------------------- config
@@ -48,6 +46,9 @@ list(
   tar_target(oad_raw,          fetch_oad(cfg_target, asof_date)),
   tar_target(nom_raw,          fetch_nom(cfg_target, asof_date)),
   tar_target(visa_grants_raw,  fetch_visa_grants(cfg_target, asof_date)),
+  # BITRE and temp-visa-holder fetchers are gated off in config.yml
+  # (their landing pages moved to Power BI and no model consumes them);
+  # when disabled they return empty tibbles immediately.
   tar_target(bitre_raw,        fetch_bitre(cfg_target, asof_date)),
   tar_target(twh_raw,          fetch_temp_visa_holders(cfg_target, asof_date)),
 

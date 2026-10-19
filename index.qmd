@@ -31,10 +31,11 @@ pi_sm     <- smooth_pi(pi_emp, cfg)
 
 kalman_headline <- build_nowcast_headline_from_multi(fc_multi, cfg)
 
-# Phase 3 v0.4: prefer the bayes_gamma headline when a fresh snapshot
-# is committed (regenerated locally via scripts/refresh_headline_bayes.R).
-# Falls back to the Kalman headline when no snapshot is present so the
-# render workflow stays Stan-free.
+# Phase 3 v0.9: prefer the bayes_kalman headline when a snapshot is
+# committed (regenerated weekly by the `Refresh headline (Bayes)`
+# workflow or locally via scripts/refresh_headline_bayes.R). Falls back
+# to the Kalman headline when no snapshot is present so the render
+# workflow stays Stan-free.
 bayes_snapshot_path <- "data/headline_bayes.rds"
 bayes_meta_path     <- "data/headline_bayes_meta.rds"
 has_bayes_headline <- file.exists(bayes_snapshot_path)
@@ -47,8 +48,14 @@ headline <- if (has_bayes_headline) {
 } else kalman_headline
 
 headline_model_label <- if (has_bayes_headline) {
-  "Bayesian state-space (Phase 3 v0.6) with Kalman-filter likelihood"
+  "Bayesian state-space model (Phase 3 v0.6, `bayes_kalman`) with Kalman-filter likelihood"
 } else "multivariate state-space Kalman filter (Phase 2 v4.0)"
+headline_model_short <- if (has_bayes_headline) "bayes_kalman" else "kalman_multi_v2"
+# The number on the card comes from the committed snapshot, which can be
+# up to a week older than the page render. Show the fit date honestly.
+headline_fit_date <- if (has_bayes_headline && !is.null(bayes_headline_meta$asof)) {
+  as.Date(bayes_headline_meta$asof)
+} else asof
 
 # Identify the current quarter and the most recent ABS-published quarter
 asof_q  <- nn_quarter_start(asof - lubridate::days(1L))
@@ -81,7 +88,7 @@ Headline nowcast — `{r} nn_quarter_label(hl_row$period, sep = ' · ')`
 80% interval: `{r} fmt_k(hl_row$lower_80)` to `{r} fmt_k(hl_row$upper_80)`
 :::
 ::: {.headline-asof}
-Quarterly Net Overseas Migration. Run as of `{r} format(asof, '%d %B %Y')`.
+Quarterly Net Overseas Migration. Model fit as of `{r} format(headline_fit_date, '%d %B %Y')`; page rendered `{r} format(asof, '%d %B %Y')`.
 :::
 :::
 
@@ -127,15 +134,20 @@ recent |>
   gt::tab_style(style = gt::cell_text(weight = "bold"),
                 locations = gt::cells_body(rows = is.na(recent$ABS))) |>
   gt::tab_options(table.font.size = "small") |>
-  gt::tab_source_note(gt::md(
-    "**Model**: multivariate Kalman with NOM, OAD long-term arrivals, and DHA visa grants as joint observations. **ABS**: latest published NOM via `national-state-and-territory-population` cat. 3101.0. Bolded rows are unpublished by ABS at the asof date — those are nowcasts."
-  ))
+  gt::tab_source_note(gt::md(paste0(
+    "**Model**: ", headline_model_label,
+    " — NOM, OAD long-term arrivals and DHA visa grants as joint observations on one latent state. ",
+    "**ABS**: latest published NOM via `national-state-and-territory-population` cat. 3101.0. ",
+    "Bolded rows are unpublished by ABS at the render date — those are nowcasts. ",
+    "Rows ABS has since published show the model's *smoothed* value at fit time, not the real-time nowcast; see the Backtest page for honest real-time errors."
+  )))
 ```
 
 ## Nowcast vs ABS over time
 
 ```{r headline-plot}
-plot_nowcast_headline(headline, panel, asof = asof)
+plot_nowcast_headline(headline, panel, asof = asof,
+                      model_label = paste0(headline_model_short, " headline"))
 ```
 
 ## Where the model gets its signal
@@ -159,25 +171,49 @@ the equations.
 
 ## How accurate is it?
 
-Out-of-sample backtest across 11 quarterly as-of dates from 2023-Q1 to
-2025-Q3, with each as-of date's data restricted to what would have been
-publicly observable then:
-
-| Horizon              | Multivariate Kalman RMSE |
-|----------------------|-------------------------:|
-| h = -2 (backcast)    | ~36,000 |
-| h = -1 (backcast)    | ~38,000 |
-| h = 0  (nowcast)     | ~78,000 |
-| h = +1 (forecast)    | ~74,000 |
+```{r accuracy-table}
+#| results: asis
+scored_path <- "data/backtest_scored.rds"
+bt_meta     <- if (file.exists("data/backtest_meta.rds")) readRDS("data/backtest_meta.rds") else NULL
+scored <- if (file.exists(scored_path)) readRDS(scored_path) else NULL
+acc_model <- if (!is.null(scored) && headline_model_short %in% scored$model) {
+  headline_model_short
+} else if (!is.null(scored) && "kalman_multi_v2" %in% scored$model) "kalman_multi_v2" else NULL
+if (!is.null(acc_model)) {
+  acc <- scored |>
+    dplyr::filter(model == acc_model, category == "total", regime == "post_covid") |>
+    dplyr::group_by(horizon) |>
+    dplyr::summarise(n = sum(n, na.rm = TRUE), RMSE = mean(rmse, na.rm = TRUE),
+                     Bias = mean(bias, na.rm = TRUE), Cov80 = mean(cov80, na.rm = TRUE),
+                     .groups = "drop") |>
+    dplyr::arrange(horizon) |>
+    dplyr::mutate(Horizon = dplyr::case_when(
+      horizon < 0 ~ sprintf("h = %d (backcast)", horizon),
+      horizon == 0 ~ "h = 0 (nowcast)",
+      TRUE ~ sprintf("h = +%d (forecast)", horizon)))
+  cat(sprintf("Post-COVID out-of-sample backtest of `%s` across %s quarterly as-of dates (refreshed %s), each restricted to what was publicly observable at the time:\n\n",
+              acc_model,
+              if (!is.null(bt_meta)) bt_meta$n_successful else "the available",
+              if (!is.null(bt_meta)) format(as.Date(bt_meta$refreshed_at), "%d %B %Y") else "—"))
+  print(acc |>
+    dplyr::select(Horizon, n, RMSE, Bias, Cov80) |>
+    gt::gt() |>
+    gt::fmt_number(columns = c("RMSE", "Bias"), decimals = 0, use_seps = TRUE) |>
+    gt::fmt_percent(columns = "Cov80", decimals = 0) |>
+    gt::sub_missing(missing_text = "—") |>
+    gt::cols_label(Cov80 = "80% coverage") |>
+    gt::tab_options(table.font.size = "small"))
+} else {
+  cat("No backtest snapshot is committed yet; see the [Backtest](backtest.qmd) page.\n")
+}
+```
 
 For context, ABS quarterly NOM is typically 50,000 – 150,000 per quarter.
-RMSE around 36k on backcasts corresponds to ~25% relative error on a
-60,000 quarter, ~15% on a 130,000 quarter.
-
-The model performs best on **backcasts** (revising NOM history) — where ABS
-NOM is already observed and pins the state down. Nowcasts (current quarter)
-have wider uncertainty because the model has no direct NOM signal yet.
-Full breakdown on the [Backtest](backtest.qmd) page.
+The model performs best on **backcasts** (revising NOM history), where ABS
+NOM is already observed and pins the state down. Nowcasts (the most recent
+completed quarter) have wider uncertainty because the model has no direct
+NOM signal yet. Full breakdown, including every benchmark and the
+calibration check, on the [Backtest](backtest.qmd) page.
 
 ## Run details
 
@@ -186,16 +222,28 @@ n_obs <- nrow(panel)
 periods_span <- range(panel$period, na.rm = TRUE)
 gl_w <- fit_multi$visa_gamma_weights
 
-cat(sprintf("- Pipeline run:        %s\n", format(asof, "%d %B %Y, %H:%M %Z")))
+cat(sprintf("- Page rendered:       %s\n", format(Sys.time(), "%d %B %Y, %H:%M %Z")))
 cat(sprintf("- Panel coverage:      %s to %s (%d quarterly observations × %d categories)\n",
             nn_quarter_label(periods_span[1L], sep = "-"),
             nn_quarter_label(periods_span[2L], sep = "-"),
             length(unique(panel$period)), length(unique(panel$category))))
+oad_edge <- panel |> dplyr::filter(category == "total", !is.na(oad_lt_arrivals)) |>
+  dplyr::arrange(period) |> utils::tail(1L)
+if (nrow(oad_edge)) {
+  cat(sprintf("- Latest OAD quarter:  %s (%s of 3 months published; partial quarters are %s)\n",
+              nn_quarter_label(oad_edge$period, sep = "-"),
+              ifelse(is.na(oad_edge$oad_months), "?", oad_edge$oad_months),
+              switch(cfg$panel$oad_partial_quarter %||% "scale",
+                     scale = "grossed up by historical month shares",
+                     drop  = "treated as missing",
+                     raw   = "summed as-is (legacy)")))
+}
 cat(sprintf("- Headline model:      %s\n",
             if (has_bayes_headline) "bayes_kalman (HMC, Phase 3 v0.6)" else
               fit_multi$kind %||% "kalman_multi"))
 if (has_bayes_headline && !is.null(bayes_headline_meta)) {
-  cat(sprintf("- Bayes snapshot:      refreshed %s (fit took %.1fs)\n",
+  cat(sprintf("- Bayes snapshot:      fit as of %s, refreshed %s (fit took %.1fs)\n",
+              format(as.Date(bayes_headline_meta$asof), "%d %B %Y"),
               format(bayes_headline_meta$refreshed_at, "%d %B %Y %H:%M %Z"),
               bayes_headline_meta$elapsed_seconds))
 }

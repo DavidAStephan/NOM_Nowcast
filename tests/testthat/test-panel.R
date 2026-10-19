@@ -29,6 +29,22 @@ test_that("spread_annual_to_quarters falls back to equal when weights missing", 
   expect_equal(out$value, rep(100, 4L))
 })
 
+test_that("drop_incomplete_visa_years removes a year missing programs", {
+  vg <- tibble::tibble(
+    period = as.Date(c(rep("2023-07-01", 3), rep("2024-07-01", 3), "2025-07-01")),
+    category = c("student", "skilled", "working_holiday",
+                 "student", "skilled", "working_holiday",
+                 "other_temp"),
+    value = c(300, 100, 200, 310, 110, 210, 50),
+    period_unit = "year"
+  )
+  out <- suppressMessages(drop_incomplete_visa_years(vg))
+  expect_false(as.Date("2025-07-01") %in% out$period)
+  expect_equal(nrow(out), 6L)
+  # A complete year is untouched
+  expect_equal(nrow(suppressMessages(drop_incomplete_visa_years(vg[1:6, ]))), 6L)
+})
+
 test_that("spread_annual_to_quarters preserves the annual total", {
   df <- tibble::tibble(period = as.Date(c("2024-07-01", "2025-07-01")),
                        value = c(400, 800))

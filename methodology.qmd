@@ -41,11 +41,43 @@ Education and BITRE publish, and we estimate $\pi_{c,t}$ indirectly.
 |-----------------------------------------|----------|------------|-----|
 | ABS OAD (cat. 3401.0)                   | monthly  | ~35        | latent flow target |
 | ABS NOM (cat. 3101.0)                   | quarterly| ~183       | modelling target |
-| DHA visa grants                         | monthly  | ~45        | leading indicator |
-| BITRE international airline activity    | monthly  | ~60        | capacity constraint |
-| DHA TWH / WHM aggregates                | quarterly| ~45        | cross-validation |
+| DHA visa grants (data.gov.au CKAN)      | annual FY pivots, re-issued quarterly | ~45 | leading indicator |
 
-All sources are public.
+BITRE airline activity and the DHA temporary-visa-holder stock are
+scaffolded fetchers, switched off in `config.yml`: their landing pages
+moved to Power BI and no model consumes them. All sources are public.
+
+## Data completeness at the live edge
+
+Two upstream artefacts, both fixed in October 2026, shaped every
+backtest number published before then. They are documented here
+because the historical tables further down were produced *with* the
+artefacts and are not comparable to snapshots refreshed after the fix.
+
+1. **Partial OAD quarters.** OAD is monthly with a ~35-day lag, so the
+   quarter just completed at any quarter-start origin has exactly one
+   of its three months published, and the in-progress quarter live has
+   zero to two. The panel used to sum whatever months existed and
+   present the result as a full quarter, telling every model that
+   arrivals had fallen by a third to two thirds. That is the origin of
+   the large, one-signed, model-invariant $h = 0$ under-prediction
+   (−53k to −98k) seen in earlier backtests. The panel now grosses a
+   partial quarter up by the sum of the observed months' median
+   historical shares of their quarter (per category and direction,
+   last five complete years), records `oad_months`, and can
+   alternatively drop partial quarters (`panel.oad_partial_quarter`).
+
+2. **DHA pivot parsing.** The data.gov.au pivot workbooks use merged
+   outer-dimension cells. The parser filtered blank rows before filling
+   them down, keeping only the first sub-row of every group, i.e. about
+   1% of Student and Skilled grants and 8% of Visitor grants. Fill-down
+   now precedes filtering, leaf rows are reconciled against the
+   workbook's Grand Total, year-to-date partial financial years are
+   dropped using the report's lock date, and Visitor grants (short-term
+   tourism, ~5 million a year) are excluded from the modelling panel. A
+   financial year is also dropped when it is missing programs that the
+   prior year had, so the summed indicator cannot collapse because one
+   program published early.
 
 ## Notation
 
@@ -107,6 +139,15 @@ ignoring the (small at quarterly aggregation) covariance between
 arrivals and departures.
 
 ## Phase 2 — multi-source state-space
+
+::: {.callout-note}
+The backtest tables in this section and the next were produced before
+the October 2026 data fixes described above; their visa-grant signal was
+~1% of the true Student/Skilled volumes and their $h = 0$ panel rows
+were one-month partial quarters. Treat the relative rankings with
+caution and the absolute $h = 0$ figures as superseded by the live
+[Backtest](backtest.qmd) page.
+:::
 
 ### v0.5 building blocks
 
@@ -434,8 +475,11 @@ For each evaluation date $T$ on a quarterly grid from
 `backtest.start` to the latest completed quarter:
 
 1. Restrict every input series to observations with
-   `period + period_length + publication_lag <= T`.
-2. Restrict ABS NOM to its vintage as at $T$.
+   `period + period_length + publication_lag <= T`, and gross up the
+   partial OAD quarter at the edge (see *Data completeness*).
+2. Use the captured ABS NOM vintage as at $T$ where one exists (weekly
+   snapshots since May 2026); otherwise today's values restricted by
+   lag.
 3. Re-estimate every model.
 4. Produce backcast (h ∈ {−2, −1}), nowcast (h = 0) and one-step
    forecast (h = +1).
