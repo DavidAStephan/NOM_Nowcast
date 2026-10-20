@@ -149,6 +149,9 @@ default:
 
   # ----- Modelling -----
   models:
+    # Which Bayesian Kalman variant scripts/refresh_headline_bayes.R fits
+    # for the landing-page headline: bayes_kalman or bayes_kalman_seasonal.
+    headline_model: "bayes_kalman"
     kalman_multi:
       # Phase 2 v1.0 multivariate SSM (OAD + visa grants on a shared
       # latent log-arrivals state). Set `enabled: false` to fall back
@@ -197,6 +200,7 @@ default:
       # sum_k w_k * mu[t+k] (1st-order Taylor); exact when arrivals
       # are flat across the lag window.
       enabled: false
+      seasonal: false
       chains: 2
       iter_warmup: 500
       iter_sample: 500
@@ -219,6 +223,47 @@ default:
         alpha_scale:        1.0
         phi_loc:            0.85
         phi_conc:          10
+
+    bayes_kalman_seasonal:
+      # Phase 3 v1.0 — bayes_kalman plus slowly evolving quarterly dummy
+      # seasonals on the log scale: one for OAD long-term arrivals, one
+      # for NOM (different within-year shapes). Without them every
+      # nowcast is a smoothed annual level and overshoots the low
+      # Apr-Jun / Oct-Dec quarters by 30-50k. Same Stan file as
+      # bayes_kalman (stan/headline_kalman_ssm.stan, use_seasonal = 1).
+      enabled: false
+      seasonal: true
+      # Visa grants are FY totals spread over quarters by OAD shares, so
+      # their within-year shape is OAD's; load them on the OAD seasonal.
+      visa_loads_oad_seasonal: true
+      chains: 2
+      iter_warmup: 500
+      iter_sample: 500
+      adapt_delta: 0.9
+      max_treedepth: 10
+      seed: 20260520
+      forecast_horizons: 4
+      pre_nom_quarters: 8
+      backtest_window: 12
+      gamma_lag:
+        alpha: 2.0
+        beta:  1.0
+        k_max: 4
+      priors:
+        mu0_loc:           11.0
+        mu0_scale:          1.5
+        slope0_scale:       0.1
+        sigma_obs_scale:    0.3
+        sigma_state_scale:  0.1
+        alpha_scale:        1.0
+        phi_loc:            0.85
+        phi_conc:          10
+        # Initial seasonal states ~ N(0, 0.5): post-COVID NOM swings
+        # roughly +/-0.45 log points within a year.
+        seas0_scale:        0.5
+        # Half-normal scale on the seasonal innovations: small, so the
+        # pattern drifts over years rather than quarter to quarter.
+        sigma_seas_scale:   0.05
 
     bayes_gamma_learned:
       # Phase 3 v0.3 — like bayes_gamma but learn the Gamma (alpha, beta)

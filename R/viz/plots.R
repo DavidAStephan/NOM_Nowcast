@@ -212,6 +212,11 @@ plot_backtest_rmse <- function(scored) {
       colour   = NULL
     ) +
     ggplot2::scale_colour_manual(values = c(
+      bayes_kalman          = "#6a1b9a",
+      bayes_kalman_seasonal = "#d81b60",
+      bayes_gamma           = "#00838f",
+      bayes_gamma_learned   = "#4db6ac",
+      bayes_headline        = "#9575cd",
       kalman_multi_v2  = nn_palette$model,
       kalman_multi_pi  = "#7b8a99",
       kalman_v1        = "#a3b8c9",

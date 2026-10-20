@@ -29,3 +29,16 @@ test_that("nn_first_observable accounts for period length and lag", {
     as.Date("2024-10-01")
   )
 })
+
+test_that("financial years are observable only after 30 June plus lag", {
+  # FY2024-25 (keyed 2024-07-01) ends 2025-06-30; + 45 days + 1
+  expect_equal(nn_first_observable(as.Date("2024-07-01"), "year", lag_days = 45),
+               as.Date("2025-08-15"))
+  # Calendar year keyed on 1 January still ends 31 December
+  expect_equal(nn_first_observable(as.Date("2024-01-01"), "year", lag_days = 0),
+               as.Date("2025-01-01"))
+  # restrict_to_asof must not leak an unfinished FY into a backtest
+  df <- tibble::tibble(period = as.Date(c("2023-07-01", "2024-07-01")),
+                       period_unit = "year", value = c(1, 2))
+  expect_equal(restrict_to_asof(df, "2025-04-01", lag_days = 45)$value, 1)
+})

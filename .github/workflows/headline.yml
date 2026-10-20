@@ -1,6 +1,6 @@
 name: Refresh headline (Bayes)
 
-# Fits the production headline using bayes_kalman and commits the
+# Fits the production headline (config: models.headline_model) and commits the
 # snapshot back to main. Triggered manually or on a weekly cadence.
 # The main render workflow reads `data/headline_bayes.rds`; it
 # does NOT install cmdstanr or run HMC itself.

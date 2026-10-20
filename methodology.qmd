@@ -418,6 +418,34 @@ tied with `bayes_gamma` (64.9k vs 63.8k), but on the proper
 scoring rule (log-score) and on credible-interval calibration
 `bayes_kalman` dominates by a wide margin — see the next section.
 
+### v1.0 — `bayes_kalman_seasonal` (quarterly seasonality)
+
+ABS quarterly NOM has a strong within-year pattern: post-COVID the
+April–June and October–December quarters run at roughly half the level
+of January–March and July–September. `bayes_kalman` has no seasonal
+term, so its estimate is effectively a smoothed annual level and it
+overshoots every low quarter by 30–50k. v1.0 augments the Kalman state
+with two quarterly dummy seasonals on the log scale,
+
+$$
+\gamma_t = -(\gamma_{t-1} + \gamma_{t-2} + \gamma_{t-3}) + \omega_t,
+\qquad \omega_t \sim N(0, \sigma^2_\gamma),
+$$
+
+one loading on OAD arrivals and one on NOM, because the two have
+different within-year shapes: NOM nets out departures and applies the
+12/16-month rule. Visa grants are financial-year totals spread over
+quarters in proportion to OAD arrivals, so they load on the OAD
+seasonal. A tight half-normal prior on $\sigma_\gamma$ (scale 0.05)
+lets the pattern drift over years but not quarter to quarter. The
+model is the same Stan file with `use_seasonal = 1`.
+
+On the last 11 backtest quarters the seasonal variant gets the shape
+right but carries a larger positive bias, so its RMSE ties the plain
+model while its percentage error and log score are better. The
+production headline stays on `bayes_kalman` until the level offset is
+addressed (see STATUS).
+
 ### v0.8–v0.9 — calibration + promotion
 
 The `bayes_*` models output full predictive distributions, not
@@ -475,8 +503,10 @@ For each evaluation date $T$ on a quarterly grid from
 `backtest.start` to the latest completed quarter:
 
 1. Restrict every input series to observations with
-   `period + period_length + publication_lag <= T`, and gross up the
-   partial OAD quarter at the edge (see *Data completeness*).
+   `period + period_length + publication_lag <= T` (a financial year
+   ends on 30 June, so a year of visa grants is first usable 45 days
+   after that), and gross up the partial OAD quarter at the edge (see
+   *Data completeness*).
 2. Use the captured ABS NOM vintage as at $T$ where one exists (weekly
    snapshots since May 2026); otherwise today's values restricted by
    lag.

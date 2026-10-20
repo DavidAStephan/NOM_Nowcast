@@ -201,17 +201,20 @@ run_backtest <- function(asof_date, db_path, cfg) {
              })
   } else tibble::tibble()
 
-  # Phase 3 v0.6 — Kalman-marginal-likelihood Bayesian SSM.
-  bkcfg <- cfg$models$bayes_kalman %||% list(enabled = FALSE)
-  bk_window <- bkcfg$backtest_window %||% 12L
-  bayes_kalman_fc <- if (isTRUE(bkcfg$enabled %||% FALSE) &&
-                        asof_date >= bayes_window_floor(bk_window)) {
-    tryCatch(fit_bayes_kalman(panel, asof_date, cfg),
-             error = function(e) {
-               nn_warn("bayes_kalman failed at {format(asof_date)}: {conditionMessage(e)}")
-               tibble::tibble()
-             })
-  } else tibble::tibble()
+  # Phase 3 v0.6 / v1.0 — Kalman-marginal-likelihood Bayesian SSMs
+  # (plain and seasonal variants share one fitter).
+  bayes_kalman_fc <- dplyr::bind_rows(lapply(
+    c("bayes_kalman", "bayes_kalman_seasonal"), function(nm) {
+      bkcfg <- cfg$models[[nm]] %||% list(enabled = FALSE)
+      bk_window <- bkcfg$backtest_window %||% 12L
+      if (!isTRUE(bkcfg$enabled %||% FALSE) ||
+          asof_date < bayes_window_floor(bk_window)) return(tibble::tibble())
+      tryCatch(fit_bayes_kalman(panel, asof_date, cfg, model_name = nm),
+               error = function(e) {
+                 nn_warn("{nm} failed at {format(asof_date)}: {conditionMessage(e)}")
+                 tibble::tibble()
+               })
+    }))
 
   horizons <- cfg$backtest$horizons %||% c(-2, -1, 0, 1)
   ref_q <- nn_quarter_start(asof_date - lubridate::days(1))

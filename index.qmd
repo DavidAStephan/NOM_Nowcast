@@ -31,7 +31,7 @@ pi_sm     <- smooth_pi(pi_emp, cfg)
 
 kalman_headline <- build_nowcast_headline_from_multi(fc_multi, cfg)
 
-# Phase 3 v0.9: prefer the bayes_kalman headline when a snapshot is
+# Prefer the Bayesian Kalman headline (models.headline_model) when a snapshot is
 # committed (regenerated weekly by the `Refresh headline (Bayes)`
 # workflow or locally via scripts/refresh_headline_bayes.R). Falls back
 # to the Kalman headline when no snapshot is present so the render
@@ -47,10 +47,13 @@ headline <- if (has_bayes_headline) {
                   "lower_80", "upper_80", "lower_95", "upper_95")
 } else kalman_headline
 
-headline_model_label <- if (has_bayes_headline) {
-  "Bayesian state-space model (Phase 3 v0.6, `bayes_kalman`) with Kalman-filter likelihood"
-} else "multivariate state-space Kalman filter (Phase 2 v4.0)"
-headline_model_short <- if (has_bayes_headline) "bayes_kalman" else "kalman_multi_v2"
+headline_model_short <- if (has_bayes_headline) {
+  bayes_headline_meta$model %||% "bayes_kalman"
+} else "kalman_multi_v2"
+headline_model_label <- switch(headline_model_short,
+  bayes_kalman_seasonal = "seasonal Bayesian state-space model (Phase 3 v1.0, `bayes_kalman_seasonal`) with Kalman-filter likelihood",
+  bayes_kalman          = "Bayesian state-space model (Phase 3 v0.6, `bayes_kalman`) with Kalman-filter likelihood",
+  "multivariate state-space Kalman filter (Phase 2 v4.0)")
 # The number on the card comes from the committed snapshot, which can be
 # up to a week older than the page render. Show the fit date honestly.
 headline_fit_date <- if (has_bayes_headline && !is.null(bayes_headline_meta$asof)) {
@@ -239,7 +242,7 @@ if (nrow(oad_edge)) {
                      raw   = "summed as-is (legacy)")))
 }
 cat(sprintf("- Headline model:      %s\n",
-            if (has_bayes_headline) "bayes_kalman (HMC, Phase 3 v0.6)" else
+            if (has_bayes_headline) paste0(headline_model_short, " (HMC)") else
               fit_multi$kind %||% "kalman_multi"))
 if (has_bayes_headline && !is.null(bayes_headline_meta)) {
   cat(sprintf("- Bayes snapshot:      fit as of %s, refreshed %s (fit took %.1fs)\n",

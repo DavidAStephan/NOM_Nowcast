@@ -73,8 +73,14 @@ nn_quarter_seq <- function(from, to) {
 #' A series with period `t` and publication lag `lag_days` is only
 #' observable from `t + period_length + lag_days` onwards.
 #'
+#' Annual periods are twelve months from their start date, so a
+#' financial year keyed on 1 July ends the following 30 June. (Rounding
+#' up to the calendar year, as an earlier version did, made each FY of
+#' DHA visa grants visible to the backtest 4.5 months before the year
+#' had ended.)
+#'
 #' @param period A `Date` (start of the reference period).
-#' @param period_unit One of `"month"` or `"quarter"`.
+#' @param period_unit One of `"month"`, `"quarter"` or `"year"`.
 #' @param lag_days Numeric publication lag in days.
 #' @return A `Date` — the first date at which the value is observable.
 #' @export
@@ -82,10 +88,11 @@ nn_first_observable <- function(period,
                                 period_unit = c("month", "quarter", "year"),
                                 lag_days = 0) {
   period_unit <- match.arg(period_unit)
+  period <- as.Date(period)
   period_end <- switch(period_unit,
     month   = lubridate::ceiling_date(period, unit = "month")   - lubridate::days(1),
     quarter = lubridate::ceiling_date(period, unit = "quarter") - lubridate::days(1),
-    year    = lubridate::ceiling_date(period, unit = "year")    - lubridate::days(1)
+    year    = period + lubridate::years(1) - lubridate::days(1)
   )
   period_end + lubridate::days(lag_days) + lubridate::days(1)
 }

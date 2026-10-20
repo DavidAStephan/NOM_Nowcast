@@ -26,7 +26,8 @@ cfg <- config::get(file = "config.yml")
 # controlled by cfg$models$<model>$backtest_window. NN_BAYES_MODELS
 # (comma-separated, default all four) narrows the set, e.g.
 # NN_BAYES_MODELS=bayes_kalman for a ~15-minute production-only run.
-bayes_all <- c("bayes_headline", "bayes_gamma", "bayes_gamma_learned", "bayes_kalman")
+bayes_all <- c("bayes_headline", "bayes_gamma", "bayes_gamma_learned",
+               "bayes_kalman", "bayes_kalman_seasonal")
 if (identical(Sys.getenv("NN_REFRESH_BAYES"), "1")) {
   if (!requireNamespace("cmdstanr", quietly = TRUE)) {
     cli::cli_abort("NN_REFRESH_BAYES=1 but cmdstanr is not installed; the committed snapshot would lose the production model's rows")
@@ -82,6 +83,17 @@ scored <- score_backtest(runs, db, cfg)
 
 fs::dir_create("data")
 saveRDS(scored, "data/backtest_scored.rds")
+# Per-origin predictions (one row per model x origin x period), so
+# quarter-by-quarter real-time errors can be inspected without re-running
+# the grid. Controlled by backtest.save_predictions.
+if (isTRUE(cfg$backtest$save_predictions %||% TRUE)) {
+  preds <- dplyr::bind_rows(runs) |>
+    dplyr::filter(.data$category == "total") |>
+    dplyr::select(dplyr::any_of(c("asof_date", "horizon", "period", "model",
+                                  "nom_mean", "nom_se", "lower_80", "upper_80",
+                                  "lower_95", "upper_95", "nom_vintage")))
+  saveRDS(preds, "data/backtest_predictions.rds")
+}
 saveRDS(
   list(
     refreshed_at = Sys.time(),

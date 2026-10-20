@@ -49,6 +49,7 @@ cmdstanr-free.
 | Phase 3 v0.7 | RTS smoother | Negative result, reverted |
 | Phase 3 v0.8 | Calibration check + log score on backtest page | Done |
 | Phase 3 v0.9 | Promote bayes_kalman to headline (calibration win) | Done |
+| Phase 3 v1.0 | `bayes_kalman_seasonal` — quarterly seasonal states for OAD and NOM | Done; tracked, not promoted |
 
 ## October 2026 review — two upstream data bugs
 
@@ -97,38 +98,73 @@ The June 2026 experiments (`bayes_kalman_fwd`, `bayes_kalman_twh`)
 described in earlier notes are **not in this repository** — no
 branch, stash or commit contains them.
 
+## October 2026 follow-up — look-ahead, seasonality, OAD fallback
+
+- **Financial-year look-ahead fixed.** `nn_first_observable()` rounded
+  annual periods up to the calendar year, so each FY of DHA visa grants
+  was visible to the backtest from mid-February instead of after
+  30 June. Small in practice (under 3k per quarter on matched quarters)
+  but a genuine leak; fixed and unit-tested.
+- **`bayes_kalman_seasonal` (Phase 3 v1.0).** The production model has
+  no seasonal term, so its nowcast is a smoothed annual level
+  (~95-115k every quarter against ABS swings of ~48-145k). The new
+  variant adds quarterly seasonal states for OAD and for NOM in the
+  same Stan file (`seasonal: true`). Real-time comparison, last 11
+  quarters, h=0: RMSE 29.6k vs 29.6k, bias +21.8k vs +13.2k, mean
+  % error 33% vs 35%, log score −11.59 vs −11.79 (seasonal vs plain).
+  It gets the shape right but sits too high. Not promoted; the
+  headline model is now a config switch (`models.headline_model`).
+- **OAD fallback dropped the national series.** When a live OAD fetch
+  failed, `fetch_oad_fallback()` re-read only the by-visa sheets, so
+  the `total` series every headline model uses vanished and all fits
+  failed silently. It now parses the aggregate tables too.
+- **Per-origin predictions are saved** to
+  `data/backtest_predictions.rds` (`backtest.save_predictions`), so
+  quarter-by-quarter real-time errors no longer need a re-run.
+
 ## Backtest leaderboard (post-COVID)
 
-Post-fix snapshot, 19 October 2026 (67 origins 2010-Q1 to 2026-Q3,
-12 Bayes origins, 1 origin with a real NOM vintage). Pre-fix values
-from the May 2026 snapshot in brackets.
+Current snapshot, 20 October 2026: both data bugs and the
+financial-year look-ahead fixed (67 origins 2010-Q1 to 2026-Q3, 12
+Bayes origins, 1 origin with a real NOM vintage). Pre-fix values from
+the May 2026 snapshot in brackets where they exist.
 
 | Model | h=-1 RMSE | h=0 RMSE | h=0 bias | h=0 cov80 | h=+1 RMSE |
 |-------|-----------|----------|----------|-----------|-----------|
-| `bayes_gamma` (Phase 3 v0.2) | 28.3k (46.9k) | **28.0k** (63.8k) | +8.6k (−53k) | 45% (18%) | 24.4k (59.1k) |
-| `bayes_gamma_learned` (Phase 3 v0.3) | 27.9k (46.7k) | 29.1k (65.4k) | +9.3k (−55k) | 45% | **20.7k** (61.0k) |
-| `bayes_kalman` (Phase 3 v0.6, current headline) | **26.0k** (34.0k) | 29.1k (64.9k) | +13.0k (−55k) | **91%** (45%) | 31.0k (60.0k) |
-| `bayes_headline` (Phase 3 v0.1) | 29.5k (47.3k) | 31.0k (67.0k) | +7.8k (−57k) | 45% | 26.2k (61.2k) |
+| `bayes_gamma` (Phase 3 v0.2) | 27.8k (46.9k) | **28.2k** (63.8k) | +11.5k (−53k) | 55% (18%) | 34.8k (59.1k) |
+| `bayes_gamma_learned` (Phase 3 v0.3) | 27.8k (46.7k) | 29.2k (65.4k) | +13.1k (−55k) | 55% | 38.3k (61.0k) |
+| `bayes_headline` (Phase 3 v0.1) | 29.5k (47.3k) | 29.4k (67.0k) | +12.6k (−57k) | 55% | 34.9k (61.2k) |
+| `bayes_kalman` (Phase 3 v0.6, current headline) | 25.9k (34.0k) | 29.6k (64.9k) | +13.2k (−55k) | **91%** (45%) | 35.9k (60.0k) |
+| `bayes_kalman_seasonal` (Phase 3 v1.0) | 30.7k | 29.6k | +21.8k | 100% | **34.3k** |
+| `bridge` | **25.8k** | 34.0k (102k) | −5.0k (−98k) | — | — |
 | `kalman_multi_v2` (Phase 2 v4.0) | 34.4k (36.7k) | 40.6k (77.9k) | −8.8k (−71k) | 0% | 47.7k (78.9k) |
-| `bridge` | 27.3k | 37.7k (102k) | −7.7k (−98k) | — | — |
 
-Fixing the two data bugs cut every structural model's h=0 RMSE by
-more than half and removed the one-signed under-bias; the residual
-bias is now small and slightly *positive* for the Bayes models
-(+8k to +17k on 10-11 quarters, well inside the noise of that sample
-but worth watching: the month-share gross-up may run a touch hot).
-`bayes_kalman` remains the headline: best h=-1 RMSE, tied h=0 RMSE,
-and its 80% interval now covers 91% at h=0 and 90% at h=+1, i.e. it
-is now slightly conservative rather than over-confident. The
-log-scores of the four Bayes models are within 0.2 of each other at
-h=0. The RMSE-vs-preliminary column on the site is populated for one
-origin only and will fill in one quarter per ABS release.
+For scale, the same-quarter-last-year naive forecast scores 33.6k at
+h=0 over the same 11 quarters (bias +22.4k). Fixing the two data bugs
+cut every structural model's h=0 RMSE by more than half and removed the
+one-signed under-bias. All Bayes models now sit within ~1.5k of each
+other at h=0 and roughly 12% better than the naive forecast, with a
+small positive bias. `bayes_kalman` stays the headline: near-best h=-1
+RMSE, tied h=0 RMSE, and the only model whose 80% interval reaches
+nominal coverage (91% at h=0). Its intervals are wide, though: the 80%
+band is typically about ±70% of the point. The seasonal variant gets the
+within-year shape right but carries a larger level bias (see follow-up
+1). Per-quarter predictions are in `data/backtest_predictions.rds`.
 
 ## Open follow-ups
 
 In rough priority order:
 
-1. **Retire or re-calibrate the nowcast adjustment.** With the panel
+1. **Fix the NOM level offset, then reconsider promoting the seasonal
+   model.** Both Bayes Kalman variants use one constant NOM-to-arrivals
+   offset (`alpha_n`) fitted over 1979-2026, and even for quarters ABS
+   has published the seasonal fit runs 20-30% above the ABS value
+   (sigma_nom ≈ 0.40 means the filter barely leans on NOM). Two cheap
+   candidates: a slowly drifting `alpha_n` state in the Kalman, or
+   starting the estimation window later (e.g. 2010). The Phase 2 v3
+   time-varying-offset result was negative, but that was on the
+   pre-fix panel and without seasonality.
+2. **Retire or re-calibrate the nowcast adjustment.** With the panel
    fix the h=0 bias is gone, so `R/backtest/nowcast_adjustment.R`
    (committed, switched off, unit-tested) has no remaining purpose,
    and its pre-fix calibration was deliberately not committed. Delete
@@ -136,19 +172,19 @@ In rough priority order:
    persists after a few more quarters. Watch whether the small positive bias is real;
    if so, try `panel.oad_partial_quarter: drop` or a share window
    that excludes 2020-21.
-2. **Student visa resource on CKAN is stale.** The latest "granted"
+3. **Student visa resource on CKAN is stale.** The latest "granted"
    workbook the search returns is locked at 2025-08-31 while the other
    programs are at June 2026; check whether DHA renamed the resource
    or stopped publishing, and widen the search if so.
-3. **TWH stock via CKAN (BP0019).** The scraper is gated off; a CKAN
+4. **TWH stock via CKAN (BP0019).** The scraper is gated off; a CKAN
    fetcher plus a shrunk covariate is the remaining untested leading
    indicator direction.
-4. **Per-category hierarchical Bayes.** Earlier attempt found the
+5. **Per-category hierarchical Bayes.** Earlier attempt found the
    per-category OAD series don't compose to the total (different
    visa-class definitions), so summed forecasts inflate by ~10×.
    Would need data-side restructuring to identify a clean partition
    before retrying.
-5. **Monthly / quarterly visa grants.** The FY pivots spread by OAD
+6. **Monthly / quarterly visa grants.** The FY pivots spread by OAD
    shares are a blunt leading indicator; the CKAN "Granted (Month)"
    sheets may expose finer granularity.
 

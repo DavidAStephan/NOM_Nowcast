@@ -1,11 +1,11 @@
 // Phase 3 v0.6 — Bayesian headline SSM with Kalman-filter likelihood.
+// Phase 3 v1.0 — optional quarterly seasonal states (use_seasonal = 1).
 //
 // Same observation streams as bayes_gamma (OAD, visa-grants, NOM)
-// but the latent state {mu_t, beta_t, mu_{t-1}, ..., mu_{t-K_max}}
-// is integrated out analytically via a forward Kalman filter,
-// leaving only ~10 static parameters to sample. Eliminates the
-// sigma_oad ↔ sigma_mu funnel that saturates HMC tree depth in
-// the latent-state versions.
+// but the latent state is integrated out analytically via a forward
+// Kalman filter, leaving only ~10-12 static parameters to sample.
+// Eliminates the sigma_oad ↔ sigma_mu funnel that saturates HMC tree
+// depth in the latent-state versions.
 //
 // Two material differences from bayes_gamma:
 //   1. Visa observation is linearised from log_sum_exp to
@@ -13,25 +13,34 @@
 //      across the lag window.)
 //   2. Visa lag is BACKWARD in calendar time — visa observed at
 //      quarter t informs arrivals at quarters t, t-1, ..., t-K_max.
-//      bayes_gamma uses the forward convention (visa at t leads
-//      arrivals at t..t+K_max). The forward convention is not
-//      cleanly expressible in a causal forward Kalman without
-//      smoothing; we treat the two as competing model variants
-//      and let the backtest pick the winner.
 //
-// State at filter step t:
-//   x_t = [ mu_t, beta_t, mu_{t-1}, mu_{t-2}, ..., mu_{t-K_max} ]
+// Seasonality (v1.0). Without it the model has no way to represent
+// the large within-year swings in ABS NOM (post-COVID the April-June
+// and October-December quarters run at roughly half the level of
+// January-March and July-September), so every nowcast collapses to a
+// smoothed annual level and overshoots the low quarters by 30-50k.
+// With use_seasonal = 1 the state carries two slowly evolving
+// quarterly dummy seasonals on the log scale — one for OAD long-term
+// arrivals, one for NOM — because the two have different within-year
+// shapes (NOM nets out departures and the 12/16-month classification).
+// Visa grants are annual FY totals spread over quarters in proportion
+// to OAD arrivals, so (visa_seasonal = 1) they load on the OAD
+// seasonal too. mu_t is then a deseasonalised level.
+//
+// State at filter step t (K = K_max, s = 3 + K):
+//   x_t = [ mu_t, beta_t, mu_{t-1}, ..., mu_{t-K},
+//           g_oad_t, g_oad_{t-1}, g_oad_{t-2},      (if use_seasonal)
+//           g_nom_t, g_nom_{t-1}, g_nom_{t-2} ]     (if use_seasonal)
 // Transition:
-//   mu_t      = mu_{t-1} + beta_{t-1} + N(0, sigma_mu^2)
-//   beta_t    = phi * beta_{t-1}      + N(0, sigma_beta^2)
-//   lag_k_t   = lag_{k-1, t-1}                              (k >= 1)
-//   lag_1     ≡ mu_{t-1}
-// Observation at filter step t (= calendar t):
-//   OAD  : y = mu_t + N(0, sigma_oad^2)              when has_oad
-//   NOM  : y - alpha_n = mu_t + N(0, sigma_nom^2)    when has_nom
-//   Visa : y - alpha_v
-//        = w[K]*mu_t + w[K-1]*lag_1 + ... + w[0]*lag_K + N(0, sigma_visa^2)
-//                                                    when has_visa and t > K_max
+//   mu_t    = mu_{t-1} + beta_{t-1} + N(0, sigma_mu^2)
+//   beta_t  = phi * beta_{t-1}      + N(0, sigma_beta^2)
+//   lag_k_t = lag_{k-1, t-1}
+//   g_t     = -(g_{t-1} + g_{t-2} + g_{t-3}) + N(0, sigma_seas^2)
+// Observation at step t:
+//   OAD  : y          = mu_t + g_oad_t                          + eps
+//   NOM  : y - alpha_n = mu_t + g_nom_t                         + eps
+//   Visa : y - alpha_v = sum_k w_k mu_{t-K+k} (+ g_oad_t)        + eps
+//                                         (when has_visa and t > K_max)
 
 data {
   int<lower=1> T_obs;
@@ -53,17 +62,30 @@ data {
   real<lower=0> alpha_scale;
   real<lower=0, upper=1> phi_loc;
   real<lower=0> phi_conc;
+  int<lower=0, upper=1> use_seasonal;
+  int<lower=0, upper=1> visa_seasonal;
+  real<lower=0> seas0_scale;           // prior SD of initial seasonal states
+  real<lower=0> sigma_seas_scale;      // half-normal scale, seasonal innovations
   int<lower=0, upper=1> prior_only;
 }
 
 transformed data {
-  int<lower=2> M = 2 + K_max;
+  int S = 6 * use_seasonal;
+  int<lower=2> M = 2 + K_max + S;
+  int s_oad = 3 + K_max;               // first OAD seasonal state
+  int s_nom = 6 + K_max;               // first NOM seasonal state
   vector[M] z_oad = rep_vector(0, M);
-  z_oad[1] = 1;
-  vector[M] z_nom_lin = z_oad;
+  vector[M] z_nom = rep_vector(0, M);
   vector[M] z_visa = rep_vector(0, M);
+  z_oad[1] = 1;
+  z_nom[1] = 1;
   z_visa[1] = gamma_weights[n_w];
   for (k in 1:K_max) z_visa[2 + k] = gamma_weights[n_w - k];
+  if (use_seasonal) {
+    z_oad[s_oad] = 1;
+    z_nom[s_nom] = 1;
+    if (visa_seasonal) z_visa[s_oad] = 1;
+  }
 }
 
 parameters {
@@ -77,6 +99,7 @@ parameters {
   real<lower=0, upper=1> phi;
   real mu_init;
   real beta_init;
+  vector<lower=0>[2 * use_seasonal] sigma_seas;   // [1] OAD, [2] NOM
 }
 
 transformed parameters {
@@ -88,6 +111,15 @@ transformed parameters {
   for (k in 2:K_max) F[2 + k, 2 + k - 1] = 1;
   Q[1, 1] = square(sigma_mu);
   Q[2, 2] = square(sigma_beta);
+  if (use_seasonal) {
+    for (b in 1:2) {
+      int s = s_oad + 3 * (b - 1);
+      F[s, s] = -1;  F[s, s + 1] = -1;  F[s, s + 2] = -1;
+      F[s + 1, s] = 1;
+      F[s + 2, s + 1] = 1;
+      Q[s, s] = square(sigma_seas[b]);
+    }
+  }
 }
 
 model {
@@ -98,6 +130,7 @@ model {
   sigma_nom  ~ normal(0, sigma_obs_scale);
   sigma_mu   ~ normal(0, sigma_state_scale);
   sigma_beta ~ normal(0, sigma_state_scale);
+  sigma_seas ~ normal(0, sigma_seas_scale);
   phi ~ beta(phi_loc * phi_conc, (1 - phi_loc) * phi_conc);
   mu_init   ~ normal(mu0_loc, mu0_scale);
   beta_init ~ normal(0, slope0_scale);
@@ -107,6 +140,9 @@ model {
     x[2] = beta_init;
     matrix[M, M] P = diag_matrix(rep_vector(square(mu0_scale), M));
     P[2, 2] = square(slope0_scale);
+    if (use_seasonal) {
+      for (j in s_oad:M) { x[j] = 0; P[j, j] = square(seas0_scale); }
+    }
 
     real log_lik = 0;
     for (t in 1:T_obs) {
@@ -115,31 +151,31 @@ model {
       P = 0.5 * (P + P');
 
       if (has_oad[t]) {
-        real S = quad_form_sym(P, z_oad) + square(sigma_oad);
+        real S_t = quad_form_sym(P, z_oad) + square(sigma_oad);
         real innov = y_oad[t] - dot_product(z_oad, x);
-        vector[M] K_gain = (P * z_oad) / S;
+        vector[M] K_gain = (P * z_oad) / S_t;
         x = x + K_gain * innov;
         P = P - K_gain * (z_oad' * P);
         P = 0.5 * (P + P');
-        log_lik += -0.5 * (log(2 * pi() * S) + square(innov) / S);
+        log_lik += -0.5 * (log(2 * pi() * S_t) + square(innov) / S_t);
       }
       if (has_nom[t]) {
-        real S = quad_form_sym(P, z_nom_lin) + square(sigma_nom);
-        real innov = y_nom[t] - alpha_n - dot_product(z_nom_lin, x);
-        vector[M] K_gain = (P * z_nom_lin) / S;
+        real S_t = quad_form_sym(P, z_nom) + square(sigma_nom);
+        real innov = y_nom[t] - alpha_n - dot_product(z_nom, x);
+        vector[M] K_gain = (P * z_nom) / S_t;
         x = x + K_gain * innov;
-        P = P - K_gain * (z_nom_lin' * P);
+        P = P - K_gain * (z_nom' * P);
         P = 0.5 * (P + P');
-        log_lik += -0.5 * (log(2 * pi() * S) + square(innov) / S);
+        log_lik += -0.5 * (log(2 * pi() * S_t) + square(innov) / S_t);
       }
       if (has_visa[t] && t > K_max) {
-        real S = quad_form_sym(P, z_visa) + square(sigma_visa);
+        real S_t = quad_form_sym(P, z_visa) + square(sigma_visa);
         real innov = y_visa[t] - alpha_v - dot_product(z_visa, x);
-        vector[M] K_gain = (P * z_visa) / S;
+        vector[M] K_gain = (P * z_visa) / S_t;
         x = x + K_gain * innov;
         P = P - K_gain * (z_visa' * P);
         P = 0.5 * (P + P');
-        log_lik += -0.5 * (log(2 * pi() * S) + square(innov) / S);
+        log_lik += -0.5 * (log(2 * pi() * S_t) + square(innov) / S_t);
       }
     }
     target += log_lik;
@@ -147,17 +183,13 @@ model {
 }
 
 generated quantities {
-  // Emit a posterior summary at every timestep — filtered for
-  // t <= T_obs (one-sided, using observations up to t), predicted
-  // for t > T_obs. This lets the backtest score historical quarters
-  // as well as future forecast horizons.
+  // Filtered posterior summary at every in-sample step (one-sided,
+  // observations up to t) and predicted values for t > T_obs. The NOM
+  // estimate is the NOM observation's signal z_nom' x, i.e. level plus
+  // the NOM seasonal when use_seasonal = 1.
   //
-  // v0.7 explored an RTS smoother here (two-sided posterior using
-  // all observations). The smoother is mathematically correct but
-  // *empirically worse* on this panel: the model has a ~10k systematic
-  // downward bias in the filter, and the smoother amplifies it to
-  // ~29k by propagating future observations backward through F^{-1}.
-  // Kept as a logged negative result; see Phase 3 commit history.
+  // v0.7 explored an RTS smoother here; empirically worse on this
+  // panel. Kept as a logged negative result; see Phase 3 history.
   vector[T_obs + H] nom_hat_log_mean;
   vector[T_obs + H] nom_hat_log_sd;
   vector[T_obs + H] nom_hat;
@@ -166,47 +198,51 @@ generated quantities {
     x[2] = beta_init;
     matrix[M, M] P = diag_matrix(rep_vector(square(mu0_scale), M));
     P[2, 2] = square(slope0_scale);
+    if (use_seasonal) {
+      for (j in s_oad:M) { x[j] = 0; P[j, j] = square(seas0_scale); }
+    }
     for (t in 1:T_obs) {
       x = F * x;
       P = F * P * F' + Q;
       P = 0.5 * (P + P');
       if (has_oad[t]) {
-        real S = quad_form_sym(P, z_oad) + square(sigma_oad);
-        vector[M] K_gain = (P * z_oad) / S;
+        real S_t = quad_form_sym(P, z_oad) + square(sigma_oad);
+        vector[M] K_gain = (P * z_oad) / S_t;
         x = x + K_gain * (y_oad[t] - dot_product(z_oad, x));
         P = P - K_gain * (z_oad' * P);
         P = 0.5 * (P + P');
       }
       if (has_nom[t]) {
-        real S = quad_form_sym(P, z_nom_lin) + square(sigma_nom);
-        vector[M] K_gain = (P * z_nom_lin) / S;
-        x = x + K_gain * (y_nom[t] - alpha_n - dot_product(z_nom_lin, x));
-        P = P - K_gain * (z_nom_lin' * P);
+        real S_t = quad_form_sym(P, z_nom) + square(sigma_nom);
+        vector[M] K_gain = (P * z_nom) / S_t;
+        x = x + K_gain * (y_nom[t] - alpha_n - dot_product(z_nom, x));
+        P = P - K_gain * (z_nom' * P);
         P = 0.5 * (P + P');
       }
       if (has_visa[t] && t > K_max) {
-        real S = quad_form_sym(P, z_visa) + square(sigma_visa);
-        vector[M] K_gain = (P * z_visa) / S;
+        real S_t = quad_form_sym(P, z_visa) + square(sigma_visa);
+        vector[M] K_gain = (P * z_visa) / S_t;
         x = x + K_gain * (y_visa[t] - alpha_v - dot_product(z_visa, x));
         P = P - K_gain * (z_visa' * P);
         P = 0.5 * (P + P');
       }
-      // Record filtered mu_t (one-sided posterior using obs up to t)
-      real mu_filt = x[1];
-      real var_filt = P[1, 1];
-      nom_hat_log_mean[t] = mu_filt + alpha_n;
-      nom_hat_log_sd[t]   = sqrt(var_filt + square(sigma_nom));
-      nom_hat[t] = exp(nom_hat_log_mean[t] + 0.5 * var_filt);
+      {
+        real m_t = dot_product(z_nom, x);
+        real v_t = fmax(quad_form_sym(P, z_nom), 0);
+        nom_hat_log_mean[t] = m_t + alpha_n;
+        nom_hat_log_sd[t]   = sqrt(v_t + square(sigma_nom));
+        nom_hat[t] = exp(nom_hat_log_mean[t] + 0.5 * v_t);
+      }
     }
     for (h in 1:H) {
       x = F * x;
       P = F * P * F' + Q;
       P = 0.5 * (P + P');
-      real mu_h = x[1];
-      real var_state = P[1, 1];
-      nom_hat_log_mean[T_obs + h] = mu_h + alpha_n;
-      nom_hat_log_sd[T_obs + h]   = sqrt(var_state + square(sigma_nom));
-      nom_hat[T_obs + h] = exp(nom_hat_log_mean[T_obs + h] + 0.5 * var_state);
+      real m_h = dot_product(z_nom, x);
+      real v_h = fmax(quad_form_sym(P, z_nom), 0);
+      nom_hat_log_mean[T_obs + h] = m_h + alpha_n;
+      nom_hat_log_sd[T_obs + h]   = sqrt(v_h + square(sigma_nom));
+      nom_hat[T_obs + h] = exp(nom_hat_log_mean[T_obs + h] + 0.5 * v_h);
     }
   }
 }

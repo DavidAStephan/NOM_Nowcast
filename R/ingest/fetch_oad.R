@@ -366,11 +366,32 @@ fetch_oad_fallback <- function(cfg, asof) {
   if (!length(xlsx)) cli::cli_abort("Cached OAD dir is empty: {recent[[1]]}")
   nn_warn("OAD: using cached vintage {basename(recent[[1]])}")
 
+  # The aggregate Permanent + Long-term tables (340101 / 340102) carry
+  # the `category == "total"` series every headline model is fitted on;
+  # an earlier version of this fallback parsed only the by-visa sheets,
+  # so any failed live fetch silently removed the total and every model
+  # downstream failed.
+  agg_specs <- list(
+    `340101.xlsx` = list(file = "340101.xlsx", direction = "arrival",
+                         sid = "A85232568L",
+                         label_pat = "(?i)Permanent and Long.?term Arrivals"),
+    `340102.xlsx` = list(file = "340102.xlsx", direction = "departure",
+                         sid = "A85232558J",
+                         label_pat = "(?i)Permanent and Long.?term Departures")
+  )
   purrr::map_dfr(xlsx, function(p) {
-    sheets <- readxl::excel_sheets(p)
+    out <- empty_oad()
+    sheets <- tryCatch(readxl::excel_sheets(p), error = function(e) {
+      nn_warn("OAD fallback: cannot read {basename(p)}: {conditionMessage(e)}")
+      character()
+    })
+    if (!length(sheets)) return(out)
+    spec <- agg_specs[[basename(p)]]
+    if (!is.null(spec) && "Data1" %in% sheets) {
+      return(dplyr::bind_rows(out, parse_oad_aggregate_sheet(p, "Data1", spec)))
+    }
     nat_arr <- sheets[grepl("15\\.9", sheets)][1]
     nat_dep <- sheets[grepl("16\\.9", sheets)][1]
-    out <- empty_oad()
     if (!is.na(nat_arr)) out <- dplyr::bind_rows(out, parse_oad_cube(p, nat_arr, "arrival"))
     if (!is.na(nat_dep)) out <- dplyr::bind_rows(out, parse_oad_cube(p, nat_dep, "departure"))
     out

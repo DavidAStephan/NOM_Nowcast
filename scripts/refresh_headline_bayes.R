@@ -26,7 +26,13 @@ files <- list.files("R", pattern = "\\.R$", recursive = TRUE, full.names = TRUE)
 for (f in files) sys.source(f, envir = globalenv())
 
 cfg <- config::get(file = "config.yml")
-cfg$models$bayes_kalman$enabled <- TRUE
+# Which Bayesian Kalman variant feeds the landing-page headline
+# (config: models.headline_model). Both variants share one fitter.
+headline_model <- cfg$models$headline_model %||% "bayes_kalman"
+if (!headline_model %in% c("bayes_kalman", "bayes_kalman_seasonal")) {
+  cli::cli_abort("models.headline_model must be bayes_kalman or bayes_kalman_seasonal, not {headline_model}")
+}
+cfg$models[[headline_model]]$enabled <- TRUE
 asof <- Sys.Date()
 
 cli::cli_alert_info("Fetching upstream sources at as-of {format(asof)}")
@@ -36,13 +42,13 @@ visa_grants <- fetch_visa_grants(cfg, asof)
 
 panel <- build_quarterly_panel(clean_oad(oad, cfg), clean_nom(nom, cfg),
                                clean_visa_grants(visa_grants, cfg), cfg)
-cli::cli_alert_info("Fitting bayes_kalman headline")
+cli::cli_alert_info("Fitting {headline_model} headline")
 t0 <- Sys.time()
-fc <- fit_bayes_kalman(panel, asof, cfg)
+fc <- fit_bayes_kalman(panel, asof, cfg, model_name = headline_model)
 elapsed <- round(as.numeric(Sys.time() - t0, units = "secs"), 1)
 
 if (!nrow(fc)) {
-  cli::cli_abort("bayes_kalman returned an empty forecast")
+  cli::cli_abort("{headline_model} returned an empty forecast")
 }
 
 # Regime-aware bias + coverage correction (see
@@ -59,7 +65,7 @@ if (!nrow(fc)) {
 # switched on. Horizon convention when it is: h=0 is the LAST COMPLETED
 # quarter, exactly as in run_backtest() (ref_q = quarter before the
 # origin), never the in-progress quarter.
-apply_adj <- cfg$models$bayes_kalman$apply_adjustment %||% FALSE
+apply_adj <- cfg$models[[headline_model]]$apply_adjustment %||% FALSE
 adj_path  <- "data/nowcast_adjustment.rds"
 fc$adjusted <- FALSE
 if (isTRUE(apply_adj) && file.exists(adj_path)) {
@@ -79,7 +85,7 @@ saveRDS(
   list(
     refreshed_at  = Sys.time(),
     asof          = asof,
-    model         = "bayes_kalman",
+    model         = headline_model,
     elapsed_seconds = elapsed,
     panel_periods = range(panel$period, na.rm = TRUE),
     # Transparency on the live edge: last OAD quarter with any data and
@@ -90,7 +96,7 @@ saveRDS(
                           months = tot$oad_months[which.max(tot$period)]) else NULL
     },
     oad_partial_quarter = cfg$panel$oad_partial_quarter %||% "scale",
-    gamma_lag     = cfg$models$bayes_kalman$gamma_lag
+    gamma_lag     = cfg$models[[headline_model]]$gamma_lag
   ),
   "data/headline_bayes_meta.rds"
 )
